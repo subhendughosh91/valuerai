@@ -19,8 +19,8 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   if (!documents?.length) return NextResponse.json({ error: "Upload at least one document before OCR." }, { status: 422 });
 
   return NextResponse.json({
-    queued: documents.filter((document) => !document.ocr_text).map((document) => document.id),
+    queued: [],
     completed: documents.filter((document) => Boolean(document.ocr_text)).map((document) => document.id),
-    message: "OCR jobs are queued automatically when document upload metadata is saved.",
+    message: "OCR runs synchronously when each document upload is completed.",
   });
 }

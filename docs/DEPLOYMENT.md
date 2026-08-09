@@ -25,7 +25,7 @@ Add these environment variables in **Vercel → Project Settings → Environment
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL | Public browser configuration |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Supabase publishable key | Public browser configuration |
-| `SUPABASE_SERVICE_ROLE_KEY` | Server-side storage, report, and queue operations | Server only |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server-side private storage and report operations | Server only |
 | `OPENAI_API_KEY` | Server-side OCR and extraction requests | Server only |
 | `OPENAI_EXTRACTION_MODEL` | Extraction model name, e.g. `gpt-5` | Server only |
 | `OPENAI_OCR_MODEL` | OCR model name, e.g. `gpt-5` | Server only |
@@ -35,13 +35,11 @@ For Preview deployments, use a separate Supabase project and separate OpenAI pro
 
 After the first deployment, set Supabase Auth **Site URL** to the production Vercel URL and add both the production URL and any required preview URLs to Supabase Auth **Redirect URLs**.
 
-## 3. Document OCR processing
+## 3. Synchronous document extraction
 
-Applying migration `202608080005_document_processing_queue.sql` creates a durable document-processing queue. Every saved document upload automatically receives one queued job. Run `pnpm worker:ocr` locally or run `node workers/document-ocr-worker.mjs` in a dedicated long-running worker service with the same server-only environment variables.
+Applying migration `202608080006_remove_document_processing_queue.sql` removes the retired background queue. When a document upload is completed, the ValuerAI API downloads the private file, calls the OpenAI Responses API, waits for the transcription, stores the text, and returns the result in the same request. No OCR worker or separate worker host is required.
 
-Vercel hosts the web application only. Do **not** run the continuous OCR worker as a Vercel Function: it needs a persistent process and queue polling. Deploy it separately on a long-running service such as Railway, Render, Fly.io, or a managed container platform. Supply that worker service with: `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, `OPENAI_EXTRACTION_MODEL`, `OPENAI_OCR_MODEL`, `OCR_WORKER_POLL_MS`, and a unique `WORKER_ID`.
-
-The worker uses the Supabase service-role key to claim jobs atomically, download private storage objects, send them to the OpenAI Responses API for faithful transcription, store OCR text and processor metadata, and retry failures up to three times. The extraction endpoint accepts only documents with completed OCR text. Both OCR and extraction requests use `store: false`. Virus scanning is excluded by product decision.
+The user then selects **Run AI extraction** after all document text is ready. That request also waits for the extraction response and opens the review screen. Both OCR and extraction requests use `store: false`. Virus scanning is excluded by product decision.
 
 ## 4. Operational controls
 

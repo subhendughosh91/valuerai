@@ -16,11 +16,12 @@ export function ProductionApp() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [loginRole, setLoginRole] = useState<Profile["role"]>("USER");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const supabase = createSupabaseBrowserClient();
 
-  async function load() {
+  async function load(): Promise<Profile | null> {
     const {
       data: { user },
       error,
@@ -29,7 +30,7 @@ export function ProductionApp() {
     if (error || !user) {
       setProfile(null);
       setLoading(false);
-      return;
+      return null;
     }
 
     const { data } = await supabase
@@ -38,8 +39,10 @@ export function ProductionApp() {
       .eq("id", user.id)
       .single();
 
-    setProfile(data as Profile | null);
+    const loadedProfile = data as Profile | null;
+    setProfile(loadedProfile);
     setLoading(false);
+    return loadedProfile;
   }
 
   useEffect(() => {
@@ -66,7 +69,14 @@ export function ProductionApp() {
       setMessage(error.message);
       return;
     }
-    await load();
+    const signedInProfile = await load();
+    if (!signedInProfile || signedInProfile.role !== loginRole) {
+      await supabase.auth.signOut();
+      setProfile(null);
+      setMessage(loginRole === "ADMIN"
+        ? "This account is not authorised for Admin access. Select User to sign in."
+        : "This is an Admin account. Select Admin to sign in.");
+    }
   }
 
   if (loading) {
@@ -94,6 +104,14 @@ export function ProductionApp() {
         <form className="auth-card" onSubmit={signIn} method="post">
           <p className="eyebrow">WELCOME TO VALUERAI</p>
           <h2>Sign in to your workspace</h2>
+          <div className="role-picker" aria-label="Choose account type">
+            <button type="button" className={loginRole === "USER" ? "selected" : ""} onClick={() => setLoginRole("USER")}>
+              User<span>Professional workspace</span>
+            </button>
+            <button type="button" className={loginRole === "ADMIN" ? "selected" : ""} onClick={() => setLoginRole("ADMIN")}>
+              Admin<span>Owner access only</span>
+            </button>
+          </div>
           <label className="label">Email address<input name="email" type="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
           <label className="label">Password<input name="password" type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
           {message && <p className="notice">{message}</p>}

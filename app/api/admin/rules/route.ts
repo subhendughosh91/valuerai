@@ -2,10 +2,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireProfile } from "../../../../lib/auth";
 
-const ruleSchema = z.object({ stateCode: z.literal("TR"), kind: z.enum(["EXTRACTION", "VALUATION", "LAND"]), content: z.string().min(50), publish: z.boolean().default(false) });
-export async function GET() {
+const ruleSchema = z.object({ stateCode: z.string().length(2), kind: z.enum(["EXTRACTION", "VALUATION", "LAND"]), content: z.string().min(1), publish: z.boolean().default(false) });
+export async function GET(request: Request) {
   const context = await requireProfile(true); if (context instanceof NextResponse) return context;
-  const { data, error } = await context.supabase.from("state_rule_versions").select("*").eq("state_code", "TR").order("kind").order("version", { ascending: false });
+  const stateCode = new URL(request.url).searchParams.get("stateCode") || "TR";
+  const { data, error } = await context.supabase.from("state_rule_versions").select("*").eq("state_code", stateCode).order("kind").order("version", { ascending: false });
   if (error) return NextResponse.json({ error: error.message }, { status: 400 }); return NextResponse.json({ rules: data });
 }
 export async function POST(request: Request) {

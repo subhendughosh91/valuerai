@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { createSupabaseBrowserClient } from "../lib/supabase/browser";
 import { ValuationWorkspace } from "./valuation-workspace";
+import { AdminWorkspace } from "./admin-workspace";
 
 type Profile = {
   display_name: string;
@@ -58,6 +59,7 @@ export function ProductionApp() {
   }
 
   if (profile) {
+    if (profile.role === "ADMIN") return <AdminWorkspace profile={profile} onSignOut={() => supabase.auth.signOut().then(() => location.assign("/"))} />;
     return <ValuationWorkspace profile={profile} onSignOut={() => supabase.auth.signOut().then(() => location.assign("/"))} />;
   }
 

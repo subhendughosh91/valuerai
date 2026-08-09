@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireProfile } from "../../../../../lib/auth";
 import { extractTripuraValuation } from "../../../../../lib/openai-extraction";
+import { AI_CREDITS_EXHAUSTED_MESSAGE, isAiCreditsExhausted } from "../../../../../lib/openai-errors";
 
 export async function POST(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const context = await requireProfile(); if (context instanceof NextResponse) return context;
@@ -22,6 +23,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     return NextResponse.json({ extraction: extracted, runId: run.id });
   } catch (error) {
     await context.supabase.from("extraction_runs").update({ status: "FAILED", error: error instanceof Error ? error.message : "Unknown extraction error", completed_at: new Date().toISOString() }).eq("id", run.id);
+    if (isAiCreditsExhausted(error)) return NextResponse.json({ error: AI_CREDITS_EXHAUSTED_MESSAGE, code: "AI_CREDITS_EXHAUSTED" }, { status: 402 });
     await context.supabase.from("valuations").update({ status: "FAILED", processing_error: "Extraction failed. Retry after resolving the issue." }).eq("id", id);
     return NextResponse.json({ error: "Extraction failed." }, { status: 502 });
   }

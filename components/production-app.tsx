@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 import { createSupabaseBrowserClient } from "../lib/supabase/browser";
 import { ValuationWorkspace } from "./valuation-workspace";
 import { AdminWorkspace } from "./admin-workspace";
@@ -22,9 +23,11 @@ export function ProductionApp() {
   async function load() {
     const {
       data: { user },
+      error,
     } = await supabase.auth.getUser();
 
-    if (!user) {
+    if (error || !user) {
+      setProfile(null);
       setLoading(false);
       return;
     }
@@ -40,8 +43,20 @@ export function ProductionApp() {
   }
 
   useEffect(() => {
-    void load();
-  }, []);
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, session: Session | null) => {
+      if (!session) {
+        setProfile(null);
+        setLoading(false);
+        return;
+      }
+
+      void load();
+    });
+
+    return () => subscription.unsubscribe();
+  }, [supabase]);
 
   async function signIn(event: FormEvent) {
     event.preventDefault();
@@ -76,11 +91,11 @@ export function ProductionApp() {
         </div>
       </section>
       <section className="auth-panel">
-        <form className="auth-card" onSubmit={signIn}>
+        <form className="auth-card" onSubmit={signIn} method="post">
           <p className="eyebrow">WELCOME TO VALUERAI</p>
           <h2>Sign in to your workspace</h2>
-          <label className="label">Email address<input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
-          <label className="label">Password<input type="password" required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+          <label className="label">Email address<input name="email" type="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+          <label className="label">Password<input name="password" type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
           {message && <p className="notice">{message}</p>}
           <button className="button primary wide">Sign in</button>
           <p className="switch">New to ValuerAI? <a href="/register">Create an account</a></p>

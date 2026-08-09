@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireProfile } from "../../../../../../lib/auth";
 import { extractDocumentText } from "../../../../../../lib/document-ocr";
+import { AI_CREDITS_EXHAUSTED_MESSAGE, isAiCreditsExhausted } from "../../../../../../lib/openai-errors";
 import { createSupabaseAdminClient } from "../../../../../../lib/supabase/admin";
 import { documentKinds } from "../../../../../../lib/valuation-schema";
 
@@ -28,6 +29,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     await context.supabase.from("audit_events").insert({ actor_id: context.profile.id, valuation_id: id, event_type: "DOCUMENT_OCR_COMPLETED", payload: { documentId: document.id, provider: "openai-responses", mode: "synchronous" } });
     return NextResponse.json({ document: { ...document, ocr_text: ocrText, ocr_completed_at: completedAt }, processingStatus: "COMPLETE" }, { status: 201 });
   } catch (ocrError) {
+    if (isAiCreditsExhausted(ocrError)) return NextResponse.json({ error: AI_CREDITS_EXHAUSTED_MESSAGE, code: "AI_CREDITS_EXHAUSTED" }, { status: 402 });
     const message = ocrError instanceof Error ? ocrError.message : "Document OCR failed.";
     await context.supabase.from("valuation_documents").update({ processing_metadata: { ocrStatus: "FAILED", mode: "synchronous", error: message } }).eq("id", document.id);
     await context.supabase.from("audit_events").insert({ actor_id: context.profile.id, valuation_id: id, event_type: "DOCUMENT_OCR_FAILED", payload: { documentId: document.id, mode: "synchronous" } });

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "./supabase/server";
 
-export type AppProfile = { id: string; role: "USER" | "ADMIN"; display_name: string; state_code: string };
+export type AppProfile = { id: string; role: "USER" | "ADMIN"; display_name: string; state_code: string | null };
 
 export async function requireProfile(adminOnly = false): Promise<{ profile: AppProfile; supabase: Awaited<ReturnType<typeof createSupabaseServerClient>> } | NextResponse> {
   const supabase = await createSupabaseServerClient();

@@ -9,7 +9,7 @@ import { AdminWorkspace } from "./admin-workspace";
 type Profile = {
   display_name: string;
   role: "USER" | "ADMIN";
-  state_code: string;
+  state_code: string | null;
 };
 
 export function ProductionApp() {

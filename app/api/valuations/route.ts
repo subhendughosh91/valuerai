@@ -10,7 +10,7 @@ export async function GET() {
 }
 export async function POST(request: Request) {
   const context = await requireProfile(); if (context instanceof NextResponse) return context;
-  if (context.profile.state_code !== "TR") return NextResponse.json({ error: "Valuation is not enabled for this state." }, { status: 409 });
+  if (context.profile.role !== "USER" || context.profile.state_code !== "TR") return NextResponse.json({ error: "Valuation is not enabled for this state." }, { status: 409 });
   const body = z.object({ propertyLabel: z.string().max(200).optional() }).parse(await request.json());
   const { data, error } = await context.supabase.from("valuations").insert({ user_id: context.profile.id, state_code: "TR", status: "UPLOADING", property_label: body.propertyLabel ?? null }).select().single();
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });

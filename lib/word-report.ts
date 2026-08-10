@@ -99,6 +99,7 @@ export async function createSbiStyleValuationReport({ referenceNo, userName, app
   const property = [locality.mouja, locality.tehsil, locality.district].filter(Boolean).join(", ") || "N/A";
   const owner = names(approved.ownerNames);
   const reportDate = new Date().toLocaleDateString("en-GB");
+  const reportComments = [...(Array.isArray(approved.comments) ? approved.comments : []), ...(Array.isArray(calculation.agentComments) ? calculation.agentComments : [])];
   const landRows = landClasses.length ? landClasses.map((land: any) => {
     const item = (calculation.landItems ?? []).find((candidate: any) => candidate.name === land.name);
     return new TableRow({ children: [reportCell(land.name), reportCell(land.areaSqFt ? `${land.areaSqFt} sq ft` : "N/A", { align: AlignmentType.RIGHT }), reportCell(land.considered ? "Yes" : "No", { align: AlignmentType.CENTER }), reportCell(item ? money(item.ratePerSqFt) : "N/A", { align: AlignmentType.RIGHT }), reportCell(item ? money(item.value) : "N/A", { align: AlignmentType.RIGHT })] });
@@ -167,7 +168,7 @@ export async function createSbiStyleValuationReport({ referenceNo, userName, app
           new TableRow({ children: [reportCell(" ", { fill: paleBlue }), reportCell("Total market value", { bold: true, fill: paleBlue }), reportCell(money(calculation.marketValue), { bold: true, fill: paleBlue, align: AlignmentType.RIGHT })] }),
         ], [1300, 4700, 3000]),
         paragraph("Remarks", { bold: true, size: 21, color: blue, before: 180 }),
-        line(names(approved.comments)),
+        line(names(reportComments)),
         line("This valuation is a technical opinion based on the information made available for the assignment. It does not verify title, authenticity, approvals, or legal encumbrances. Any unavailable field has been recorded as N/A."),
         table([["1. Market Value", money(calculation.marketValue)], ["2. Realisable Value", money(calculation.realisableValue)], ["3. Distress Sale Value", money(calculation.distressValue)]].map(([label, value]) => new TableRow({ children: [reportCell(label, { bold: true, fill: paleBlue }), reportCell(value, { bold: true, fill: paleBlue, align: AlignmentType.RIGHT })] })), [5200, 3800]),
         paragraph("Signature of Valuer", { bold: true, size: 20, align: AlignmentType.RIGHT, before: 650 }),

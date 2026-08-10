@@ -21,6 +21,7 @@ type UploadStage = "QUEUED" | "UPLOADING" | "UPLOADED" | "PROCESSING" | "READY" 
 type UploadEntry = { id: string; documentId?: string; name: string; stage: UploadStage; error?: string };
 type ExtractionPhase = "PREPARING" | "OCR" | "AI" | "REVIEW";
 type ExtractionProgress = { phase: ExtractionPhase; title: string; detail: string; completed: number; total: number; percent: number };
+type ValuationPhase = "APPROVING" | "VALUING" | "REPORTING" | "COMPLETE";
 
 const uploadStageLabel: Record<UploadStage, string> = {
   QUEUED: "Waiting to upload",
@@ -43,6 +44,10 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   const [newValuationMode, setNewValuationMode] = useState(false);
   const [newValuationName, setNewValuationName] = useState("");
   const [customInstructions, setCustomInstructions] = useState("");
+  const [reviewData, setReviewData] = useState<any>(null);
+  const [valuationPhase, setValuationPhase] = useState<ValuationPhase | null>(null);
+  const [discardingExtraction, setDiscardingExtraction] = useState(false);
+  const [reportDownloadUrl, setReportDownloadUrl] = useState("");
   const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress>({
     phase: "PREPARING",
     title: "Preparing uploaded documents",
@@ -73,6 +78,8 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
       const loadedValuation = (await api(`/api/valuations/${id}`)).valuation;
       setValuation(loadedValuation);
       setCustomInstructions(loadedValuation.custom_instructions || "");
+      const editableData = loadedValuation.approved_data || loadedValuation.extraction_data;
+      setReviewData(editableData && Object.keys(editableData).length ? structuredClone(editableData) : null);
     } catch (error: any) {
       setMessage(error.message);
     } finally {
@@ -268,6 +275,8 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     setMessage("Document text extraction and AI valuation extraction are in progress. Please keep this page open.");
     try {
       await api(`/api/valuations/${valuation.id}/extract`, { method: "POST" });
+      setExtractionProgress({ phase: "REVIEW", title: "Extraction complete", detail: "Preparing the editable review form.", completed: valuation.valuation_documents?.length || 0, total: valuation.valuation_documents?.length || 0, percent: 100 });
+      await new Promise((resolve) => window.setTimeout(resolve, 650));
       await open(valuation.id);
       setMessage("Extraction complete. Review the extracted data and confirm when ready.");
     } catch (error: any) {
@@ -312,14 +321,66 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   async function reset() {
     if (!confirm("Discard documents and extracted data?")) return;
     setBusy(true);
+    setDiscardingExtraction(true);
+    setMessage("");
     try {
       await api(`/api/valuations/${valuation.id}/reset`, { method: "POST" });
       setUploadStatus({});
       setOtherDocumentTypes("");
+      setReviewData(null);
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
       await open(valuation.id);
     } catch (error: any) {
       setMessage(error.message);
     } finally {
+      setDiscardingExtraction(false);
+      setBusy(false);
+    }
+  }
+
+  async function proceedWithValuation() {
+    if (!valuation || !reviewData || busy) return;
+    setBusy(true);
+    setMessage("");
+    setValuationPhase("APPROVING");
+    try {
+      await api(`/api/valuations/${valuation.id}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(reviewData),
+      });
+      setValuationPhase("VALUING");
+      await api(`/api/valuations/${valuation.id}/calculate`, { method: "POST" });
+      setValuationPhase("REPORTING");
+      const generated = await api(`/api/valuations/${valuation.id}/report`, { method: "POST" });
+      setReportDownloadUrl(generated.downloadUrl);
+      setValuationPhase("COMPLETE");
+      await new Promise((resolve) => window.setTimeout(resolve, 700));
+      await open(valuation.id);
+    } catch (error: any) {
+      await open(valuation.id);
+      setMessage(error.message);
+    } finally {
+      setValuationPhase(null);
+      setBusy(false);
+    }
+  }
+
+  async function generateReport() {
+    if (!valuation || busy) return;
+    setBusy(true);
+    setMessage("");
+    setValuationPhase("REPORTING");
+    try {
+      const generated = await api(`/api/valuations/${valuation.id}/report`, { method: "POST" });
+      setReportDownloadUrl(generated.downloadUrl);
+      setValuationPhase("COMPLETE");
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+      await open(valuation.id);
+    } catch (error: any) {
+      setMessage(error.message);
+    } finally {
+      setValuationPhase(null);
       setBusy(false);
     }
   }
@@ -421,8 +482,8 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
             <div className="panel">
               <h2>Valuation history</h2>
               <table>
-                <thead><tr><th>Reference</th><th>Valuation Name</th><th>Valuation start date</th><th>Valuation start time</th><th>Status</th></tr></thead>
-                <tbody>{valuations.map((item) => <tr key={item.id}><td><a className="valuation-reference" href={`/?valuation=${item.id}`} target="_blank" rel="noopener noreferrer">{item.reference_no}</a></td><td>{item.property_label || "Unnamed valuation"}</td><td>{formatStartDate(item.created_at)}</td><td>{formatStartTime(item.created_at)}</td><td>{item.status.replaceAll("_", " ")}</td></tr>)}</tbody>
+                <thead><tr><th>Reference</th><th>Valuation Name</th><th>Valuation start date</th><th>Valuation start time</th><th>Status</th><th>Report</th></tr></thead>
+                <tbody>{valuations.map((item) => <tr key={item.id}><td><a className="valuation-reference" href={`/?valuation=${item.id}`} target="_blank" rel="noopener noreferrer">{item.reference_no}</a></td><td>{item.property_label || "Unnamed valuation"}</td><td>{formatStartDate(item.created_at)}</td><td>{formatStartTime(item.created_at)}</td><td>{item.status.replaceAll("_", " ")}</td><td>{item.reports?.length ? <a className="valuation-reference" href={`/api/valuations/${item.id}/report`}>Download .docx</a> : "Not available"}</td></tr>)}</tbody>
               </table>
             </div>
           </>
@@ -430,11 +491,13 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
           <>
             <button className="text-button" onClick={() => { setValuation(null); void loadList(); }}>Back to valuations</button>
             <header className="topbar"><div><p className="eyebrow">{valuation.reference_no}</p><h1>{valuation.property_label || "New valuation"}</h1></div></header>
-            {message && !extracting && <p className="notice">{message}</p>}
+            {message && !extracting && !valuationPhase && !discardingExtraction && <p className="notice">{message}</p>}
 
             {extracting && <ExtractionProgressPanel progress={extractionProgress} />}
+            {valuationPhase && <ValuationProgressPanel phase={valuationPhase} />}
+            {discardingExtraction && <WorkspaceTransition title="Discarding extracted data" detail="Removing uploaded documents and preparing a clean valuation workspace." />}
 
-            {!extracting && ["DRAFT", "UPLOADING"].includes(valuation.status) && (
+            {!extracting && !valuationPhase && !discardingExtraction && ["DRAFT", "UPLOADING"].includes(valuation.status) && (
               <div className="panel">
                 <div className="panel-heading">
                   <div><h2>Upload documents</h2><p>Files are stored securely when uploaded. Document text extraction starts only after you click Start Valuation.</p></div>
@@ -480,7 +543,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
                     disabled={busy}
                     onChange={(event) => setCustomInstructions(event.target.value)}
                     onBlur={() => void saveCustomInstructions().catch((error) => setMessage(error.message))}
-                    placeholder="For example: The Khatiyan is included in the Sale Deed file. KYC is unavailable; use the name Subhendu Ghosh as user-provided information."
+                    placeholder="Add relevant processing context, such as relationships between uploaded documents, unavailable supporting records, or verified details supplied separately."
                   />
                   <small>Provide any additional document context or special guidance for the Extraction and Valuation Engines. These instructions cannot override published rules or verified document evidence.</small>
                   <small className="instruction-count">{customInstructions.length}/4000</small>
@@ -493,23 +556,31 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
               </div>
             )}
 
-            {valuation.status === "REVIEW_REQUIRED" && (
-              <div className="panel">
-                <h2>Review extracted data</h2>
-                <p className="muted">Edit support and valuation-rate entry are the next UI enhancement. The persisted structured extraction is available below.</p>
-                <pre>{JSON.stringify(valuation.extraction_data, null, 2)}</pre>
-                <button className="button danger" onClick={() => void reset()}>Reupload documents</button>
-              </div>
-            )}
+            {!valuationPhase && !discardingExtraction && valuation.status === "REVIEW_REQUIRED" && reviewData && <ExtractedDataReview data={reviewData} onChange={setReviewData} onProceed={() => void proceedWithValuation()} onDiscard={() => void reset()} busy={busy} />}
 
-            {!extracting && valuation.status === "EXTRACTING" && (
+            {!extracting && !valuationPhase && !discardingExtraction && valuation.status === "EXTRACTING" && (
               <ExtractionProgressPanel
                 progress={{ phase: "AI", title: "Valuation extraction in progress", detail: "ValuerAI is processing the uploaded documents and preparing structured valuation data.", completed: 0, total: valuation.valuation_documents?.length || 0, percent: 70 }}
                 onRefresh={() => void open(valuation.id)}
               />
             )}
 
-            {!["DRAFT", "UPLOADING", "REVIEW_REQUIRED", "EXTRACTING"].includes(valuation.status) && (
+            {!valuationPhase && !discardingExtraction && valuation.status === "VALUING" && <ValuationProgressPanel phase="VALUING" onRefresh={() => void open(valuation.id)} />}
+
+            {!valuationPhase && !discardingExtraction && valuation.status === "COMPLETE" && (
+              <section className="panel valuation-complete-panel">
+                <span className="completion-mark">✓</span>
+                <p className="eyebrow">VALUATION COMPLETE</p>
+                <h2>Your valuation document is ready</h2>
+                <p className="muted">The editable Word report is stored securely with this valuation and remains available from Valuation History.</p>
+                <div className="completion-actions">
+                  {valuation.reports?.length ? <a className="button primary button-link" href={reportDownloadUrl || `/api/valuations/${valuation.id}/report`}>Download valuation report (.docx)</a> : <button className="button primary" onClick={() => void generateReport()}>Generate valuation document</button>}
+                  <button className="button secondary" onClick={() => window.close()}>Close Valuation</button>
+                </div>
+              </section>
+            )}
+
+            {!["DRAFT", "UPLOADING", "REVIEW_REQUIRED", "EXTRACTING", "VALUING", "COMPLETE"].includes(valuation.status) && (
               <div className="panel"><h2>Valuation status: {valuation.status.replaceAll("_", " ")}</h2><p className="muted">This valuation has been reopened at its latest saved execution status.</p>{valuation.processing_error && <p className="notice">{valuation.processing_error}</p>}</div>
             )}
           </>
@@ -552,4 +623,130 @@ function ExtractionProgressPanel({ progress, onRefresh }: { progress: Extraction
       </div>
     </section>
   );
+}
+
+function ExtractedDataReview({ data, onChange, onProceed, onDiscard, busy }: { data: any; onChange: (data: any) => void; onProceed: () => void; onDiscard: () => void; busy: boolean }) {
+  const setPath = (path: Array<string | number>, value: unknown) => {
+    const next = structuredClone(data);
+    let target = next;
+    for (let index = 0; index < path.length - 1; index += 1) target = target[path[index]];
+    target[path[path.length - 1]] = value;
+    onChange(next);
+  };
+  const numberValue = (value: string) => value.trim() === "" ? null : Number(value);
+  const deeds = data.deeds || [];
+  const landClasses = data.landClasses || [];
+  const evidence = data.evidence || [];
+  const contradictions = data.contradictions || [];
+  const comments = data.comments || [];
+
+  return (
+    <section className="review-layout extracted-review">
+      <div className="panel review-form-panel">
+        <div className="panel-heading"><div><p className="eyebrow">HUMAN REVIEW</p><h2>Review extracted data</h2><p>Confirm or correct the factual information below. Your approved values will be used by the Valuation Engine and Word report.</p></div><span className="badge warn">Editable fields</span></div>
+
+        <div className="review-section">
+          <h3>Ownership and land identifiers</h3>
+          <div className="form-grid">
+            <ReviewField label="Owner name(s)" value={(data.ownerNames || []).join(", ")} onChange={(value) => setPath(["ownerNames"], value.split(",").map((item) => item.trim()).filter(Boolean))} hint="Separate multiple names with commas." />
+            <ReviewField label="Khatiyan number" value={data.khatiyanNumber ?? ""} onChange={(value) => setPath(["khatiyanNumber"], value || null)} />
+            <ReviewField label="RS Hal number" value={data.rsHal?.raw ?? ""} onChange={(value) => setPath(["rsHal", "raw"], value || null)} />
+            <ReviewField label="RS Hal mother number" value={data.rsHal?.mother ?? ""} onChange={(value) => setPath(["rsHal", "mother"], value || null)} />
+            <ReviewField label="RS Hal bata number" value={data.rsHal?.bata ?? ""} onChange={(value) => setPath(["rsHal", "bata"], value || null)} />
+            <ReviewField label="CS Hal / Sebek Dag number" value={data.csHalNumber ?? ""} onChange={(value) => setPath(["csHalNumber"], value || null)} />
+          </div>
+        </div>
+
+        <div className="review-section">
+          <h3>Property location</h3>
+          <div className="form-grid">
+            {([['district', 'District'], ['subdivision', 'Subdivision'], ['revenueCircle', 'Revenue circle'], ['tehsil', 'Tehsil'], ['mouja', 'Mouja']] as const).map(([key, label]) => <ReviewField key={key} label={label} value={data.locality?.[key] ?? ""} onChange={(value) => setPath(["locality", key], value || null)} />)}
+          </div>
+        </div>
+
+        <div className="review-section">
+          <div className="review-section-heading"><h3>Sale deed details</h3><button type="button" className="text-button" onClick={() => setPath(["deeds"], [...deeds, { number: null, date: null, amount: null, type: null, adjoiningOwners: [] }])}>+ Add deed</button></div>
+          {deeds.length ? deeds.map((deed: any, index: number) => <div className="repeatable-card" key={index}>
+            <div className="repeatable-title"><strong>Deed {index + 1}</strong><button type="button" className="remove-row" onClick={() => setPath(["deeds"], deeds.filter((_: any, itemIndex: number) => itemIndex !== index))}>Remove</button></div>
+            <div className="form-grid">
+              <ReviewField label="Deed number" value={deed.number ?? ""} onChange={(value) => setPath(["deeds", index, "number"], value || null)} />
+              <ReviewField label="Deed date" value={deed.date ?? ""} onChange={(value) => setPath(["deeds", index, "date"], value || null)} />
+              <ReviewField label="Book value / deed amount" type="number" value={deed.amount ?? ""} onChange={(value) => setPath(["deeds", index, "amount"], numberValue(value))} />
+              <ReviewField label="Deed type" value={deed.type ?? ""} onChange={(value) => setPath(["deeds", index, "type"], value || null)} />
+              <ReviewField className="full-field" label="Adjoining owners and sides" value={(deed.adjoiningOwners || []).join(", ")} onChange={(value) => setPath(["deeds", index, "adjoiningOwners"], value.split(",").map((item) => item.trim()).filter(Boolean))} hint="Use entries such as North: owner name, South: road." />
+            </div>
+          </div>) : <p className="empty-review">No deed details were extracted. Add a deed record if the information is available.</p>}
+        </div>
+
+        <div className="review-section">
+          <div className="review-section-heading"><h3>Land classes and areas</h3><button type="button" className="text-button" onClick={() => setPath(["landClasses"], [...landClasses, { name: "", areaSqFt: null, sourceUnit: null, sourceValue: null, considered: false }])}>+ Add land class</button></div>
+          {landClasses.length ? landClasses.map((land: any, index: number) => <div className="repeatable-card land-class-card" key={index}>
+            <div className="form-grid">
+              <ReviewField label="Land class" value={land.name ?? ""} onChange={(value) => setPath(["landClasses", index, "name"], value)} />
+              <ReviewField label="Area in square feet" type="number" value={land.areaSqFt ?? ""} onChange={(value) => setPath(["landClasses", index, "areaSqFt"], numberValue(value))} />
+              <ReviewField label="Source area value" value={land.sourceValue ?? ""} onChange={(value) => setPath(["landClasses", index, "sourceValue"], value || null)} />
+              <ReviewField label="Source unit" value={land.sourceUnit ?? ""} onChange={(value) => setPath(["landClasses", index, "sourceUnit"], value || null)} />
+            </div>
+            <div className="land-class-actions"><label><input type="checkbox" checked={Boolean(land.considered)} onChange={(event) => setPath(["landClasses", index, "considered"], event.target.checked)} /> Consider this class for valuation</label><button type="button" className="remove-row" onClick={() => setPath(["landClasses"], landClasses.filter((_: any, itemIndex: number) => itemIndex !== index))}>Remove</button></div>
+          </div>) : <p className="empty-review">No land classes were extracted. Add available land-area information before proceeding.</p>}
+        </div>
+
+        <div className="review-section">
+          <h3>Approach road and building</h3>
+          <div className="form-grid">
+            <ReviewField label="Approach-road side" value={data.approachRoad?.side ?? ""} onChange={(value) => setPath(["approachRoad", "side"], value || null)} />
+            <ReviewField label="Approach-road direction" value={data.approachRoad?.direction ?? ""} onChange={(value) => setPath(["approachRoad", "direction"], value || null)} />
+            <label className="review-field"><span>Road attached to valued property</span><select value={data.approachRoad?.attached === null || data.approachRoad?.attached === undefined ? "" : String(data.approachRoad.attached)} onChange={(event) => setPath(["approachRoad", "attached"], event.target.value === "" ? null : event.target.value === "true")}><option value="">Not available</option><option value="true">Yes</option><option value="false">No</option></select></label>
+            <ReviewField label="Building type" value={data.building?.type ?? ""} onChange={(value) => setPath(["building", "type"], value || null)} />
+            <ReviewField label="Building plinth area (sq ft)" type="number" value={data.building?.plinthAreaSqFt ?? ""} onChange={(value) => setPath(["building", "plinthAreaSqFt"], numberValue(value))} />
+            <ReviewField label="Building age (years)" type="number" value={data.building?.ageYears ?? ""} onChange={(value) => setPath(["building", "ageYears"], numberValue(value))} />
+            <label className="review-field"><span>Approved building plan available</span><select value={data.building?.approvedPlanAvailable === null || data.building?.approvedPlanAvailable === undefined ? "" : String(data.building.approvedPlanAvailable)} onChange={(event) => setPath(["building", "approvedPlanAvailable"], event.target.value === "" ? null : event.target.value === "true")}><option value="">Not available</option><option value="true">Yes</option><option value="false">No</option></select></label>
+          </div>
+        </div>
+
+        <div className="review-section">
+          <h3>Sale agreement</h3>
+          <div className="form-grid">
+            <ReviewField label="Agreement serial number" value={data.agreement?.serialNumber ?? ""} onChange={(value) => setPath(["agreement", "serialNumber"], value || null)} />
+            <ReviewField label="Agreement date" value={data.agreement?.date ?? ""} onChange={(value) => setPath(["agreement", "date"], value || null)} />
+            <ReviewField label="E-stamp number" value={data.agreement?.eStampNumber ?? ""} onChange={(value) => setPath(["agreement", "eStampNumber"], value || null)} />
+            <ReviewField label="Buyer name" value={data.agreement?.buyerName ?? ""} onChange={(value) => setPath(["agreement", "buyerName"], value || null)} />
+          </div>
+        </div>
+
+        <div className="review-actions"><button className="button danger" disabled={busy} onClick={onDiscard}>Discard Extraction and Reupload Documents</button><button className="button primary" disabled={busy} onClick={onProceed}>Proceed with valuation</button></div>
+      </div>
+
+      <aside className="panel ai-feedback-panel">
+        <p className="eyebrow">AI FEEDBACK</p><h2>Review notes</h2><p className="muted">These observations are retained as generated and cannot be edited.</p>
+        <FeedbackGroup title="Comments" items={comments.map((item: string) => item)} empty="No additional comments." />
+        <FeedbackGroup title="Contradictions" items={contradictions.map((item: any) => item.description)} empty="No contradictions identified." tone="warning" />
+        <div className="feedback-group"><h3>Evidence</h3>{evidence.length ? evidence.map((item: any, index: number) => <div className="evidence-card" key={index}><div><strong>{item.field}</strong><span className={`badge ${item.confidence === "HIGH" ? "good" : item.confidence === "LOW" ? "warn" : ""}`}>{item.confidence}</span></div><p>{item.excerpt}</p><small>{item.documentId}</small></div>) : <p className="empty-review">No evidence excerpts were returned.</p>}</div>
+      </aside>
+    </section>
+  );
+}
+
+function ReviewField({ label, value, onChange, type = "text", hint, className = "" }: { label: string; value: string | number; onChange: (value: string) => void; type?: "text" | "number"; hint?: string; className?: string }) {
+  return <label className={`review-field ${className}`}><span>{label}</span><input type={type} min={type === "number" ? 0 : undefined} step={type === "number" ? "any" : undefined} value={value} onChange={(event) => onChange(event.target.value)} />{hint && <small>{hint}</small>}</label>;
+}
+
+function FeedbackGroup({ title, items, empty, tone = "" }: { title: string; items: string[]; empty: string; tone?: string }) {
+  return <div className={`feedback-group ${tone}`}><h3>{title}</h3>{items.length ? items.map((item, index) => <p key={index}>{item}</p>) : <p className="empty-review">{empty}</p>}</div>;
+}
+
+function ValuationProgressPanel({ phase, onRefresh }: { phase: ValuationPhase; onRefresh?: () => void }) {
+  const phases: Array<{ key: ValuationPhase; label: string; title: string; detail: string; percent: number }> = [
+    { key: "APPROVING", label: "Approve data", title: "Confirming reviewed information", detail: "Saving your corrections and locking the approved factual dataset.", percent: 18 },
+    { key: "VALUING", label: "Valuation Engine", title: "Valuation Engine in progress", detail: "Applying published state rules and preparing deterministic valuation inputs.", percent: 55 },
+    { key: "REPORTING", label: "Word report", title: "Generating valuation document", detail: "Creating and securely storing the editable Word valuation report.", percent: 84 },
+    { key: "COMPLETE", label: "Complete", title: "Valuation document completed", detail: "Preparing the secure download link.", percent: 100 },
+  ];
+  const currentIndex = phases.findIndex((item) => item.key === phase);
+  const current = phases[currentIndex];
+  return <section className="panel extraction-progress-panel valuation-progress-panel" role="status" aria-live="polite"><div className="extraction-progress-visual"><div className="extraction-orbit"><span className="logo-mark">V</span><i /><i /></div><strong>{current.percent}%</strong></div><div className="extraction-progress-copy"><p className="eyebrow">VALUATION WORKFLOW</p><h2>{current.title}</h2><p>{current.detail}</p><div className="extraction-progress-bar"><span style={{ width: `${current.percent}%` }} /></div><div className="valuation-progress-steps">{phases.map((item, index) => <div className={`extraction-step ${index < currentIndex ? "complete" : index === currentIndex ? "active" : "pending"}`} key={item.key}><span>{index < currentIndex ? "✓" : ""}</span><small>{item.label}</small></div>)}</div>{onRefresh && <button className="button secondary" onClick={onRefresh}>Refresh status</button>}</div></section>;
+}
+
+function WorkspaceTransition({ title, detail }: { title: string; detail: string }) {
+  return <section className="panel workspace-transition" role="status" aria-live="polite"><div className="app-loading-brand"><span className="loading-logo">V</span><span className="loading-ring" /></div><h2>{title}</h2><p>{detail}</p><div className="loading-bar"><span /></div></section>;
 }

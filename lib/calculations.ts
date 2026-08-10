@@ -2,10 +2,12 @@ import { valuationInputSchema } from "./valuation-schema";
 
 export function calculateTripuraValuation(raw: unknown) {
   const input = valuationInputSchema.parse(raw);
-  const landItems = input.consideredLandClasses.map(item => ({ ...item, value: round(item.areaSqFt * item.ratePerSqFt) }));
-  const landValue = round(landItems.reduce((sum, item) => sum + item.value, 0) * input.marketRateAdjustment);
-  let buildingValue = 0; let building: Record<string, number | string> | null = null;
-  if (input.building?.type && input.building.areaSqFt && input.building.ageYears !== undefined && input.building.replacementRate && input.building.lifeYears) {
+  const landItems = input.consideredLandClasses.map(item => ({ ...item, value: item.ratePerSqFt === null ? null : round(item.areaSqFt * item.ratePerSqFt) }));
+  const landValue = landItems.length && landItems.every((item) => item.value !== null)
+    ? round(landItems.reduce((sum, item) => sum + (item.value ?? 0), 0) * input.marketRateAdjustment)
+    : null;
+  let buildingValue: number | null = null; let building: Record<string, number | string> | null = null;
+  if (input.building?.type && input.building.areaSqFt && input.building.ageYears !== null && input.building.replacementRate !== null && input.building.lifeYears !== null) {
     const replacementCost = input.building.areaSqFt * input.building.replacementRate;
     const salvage = (input.building.salvagePercent ?? 10) / 100;
     const depreciable = replacementCost * (1 - salvage);
@@ -13,7 +15,8 @@ export function calculateTripuraValuation(raw: unknown) {
     buildingValue = round(replacementCost - depreciation);
     building = { type: input.building.type, replacementCost: round(replacementCost), depreciation: round(depreciation), netValue: buildingValue };
   }
-  const marketValue = round(landValue + buildingValue);
-  return { landItems, landValue, building, marketValue, realisableValue: round(marketValue * input.realisableRatio), distressValue: round(marketValue * input.distressRatio), calculationMethod: "Tripura v1 deterministic market approach" };
+  const requiresBuildingValue = input.building !== null;
+  const marketValue = landValue !== null && (!requiresBuildingValue || buildingValue !== null) ? round(landValue + (buildingValue ?? 0)) : null;
+  return { landItems, landValue, building, marketValue, realisableValue: marketValue === null ? null : round(marketValue * input.realisableRatio), distressValue: marketValue === null ? null : round(marketValue * input.distressRatio), calculationMethod: "State-rule deterministic market approach" };
 }
 function round(value: number) { return Math.round((value + Number.EPSILON) * 100) / 100; }

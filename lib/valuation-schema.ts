@@ -16,7 +16,10 @@ export const extractionSchema = z.object({
 export type ExtractedValuation = z.infer<typeof extractionSchema>;
 
 export const valuationInputSchema = z.object({
-  consideredLandClasses: z.array(z.object({ name: z.string(), areaSqFt: z.number().nonnegative(), ratePerSqFt: z.number().nonnegative() })),
-  building: z.object({ type: z.enum(["RCC", "LOAD_BEARING", "SEMI_PERMANENT"]).optional(), areaSqFt: z.number().nonnegative().optional(), ageYears: z.number().nonnegative().optional(), replacementRate: z.number().nonnegative().optional(), lifeYears: z.number().positive().optional(), salvagePercent: z.number().min(0).max(100).optional() }).optional(),
+  consideredLandClasses: z.array(z.object({ name: z.string(), areaSqFt: z.number().nonnegative(), ratePerSqFt: z.number().nonnegative().nullable() })),
+  building: z.object({ type: z.enum(["RCC", "LOAD_BEARING", "SEMI_PERMANENT"]).nullable(), areaSqFt: z.number().nonnegative().nullable(), ageYears: z.number().nonnegative().nullable(), replacementRate: z.number().nonnegative().nullable(), lifeYears: z.number().positive().nullable(), salvagePercent: z.number().min(0).max(100).nullable() }).nullable(),
   marketRateAdjustment: z.number().min(0).default(1), realisableRatio: z.number().min(0).max(1).default(.9), distressRatio: z.number().min(0).max(1).default(.75)
 });
+
+export const valuationAgentSchema = valuationInputSchema.extend({ comments: z.array(z.string()).default([]) });
+export type ValuationAgentOutput = z.infer<typeof valuationAgentSchema>;

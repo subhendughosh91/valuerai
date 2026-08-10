@@ -1,5 +1,7 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { requireProfile } from "../../../../../lib/auth";
+import { cancelBackgroundExtraction } from "../../../../../lib/openai-background-extraction";
+import { isBackgroundExtractionEnabled } from "../../../../../lib/openai-models";
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const context = await requireProfile();
@@ -59,6 +61,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       event_type: "EXTRACTION_CANCELLED",
       payload: { documentsRetained: true },
     });
+    if (isBackgroundExtractionEnabled()) {
+      after(async () => {
+        try {
+          await cancelBackgroundExtraction(id);
+        } catch (error) {
+          console.error("[background-extraction] cancellation reconciliation failed", { valuationId: id, error: error instanceof Error ? error.message : String(error) });
+        }
+      });
+    }
     return NextResponse.json({ cancelled: true, documentsRetained: true });
   }
 

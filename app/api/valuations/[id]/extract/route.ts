@@ -1,10 +1,11 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { requireProfile } from "../../../../../lib/auth";
 import { extractDocumentText } from "../../../../../lib/document-ocr";
+import { advanceBackgroundExtraction, createBackgroundExtractionRun } from "../../../../../lib/openai-background-extraction";
 import { extractTripuraValuation } from "../../../../../lib/openai-extraction";
 import { normalizeExtractedFields, runExtractionConsistencyChecks } from "../../../../../lib/openai-extraction-postprocessing";
 import { AI_CREDITS_EXHAUSTED_MESSAGE, isAiCreditsExhausted } from "../../../../../lib/openai-errors";
-import { getAiModelConfiguration } from "../../../../../lib/openai-models";
+import { getAiModelConfiguration, isBackgroundExtractionEnabled } from "../../../../../lib/openai-models";
 import { createSupabaseAdminClient } from "../../../../../lib/supabase/admin";
 
 export const maxDuration = 300;
@@ -28,6 +29,33 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const landRule = publishedRules?.find((rule) => rule.kind === "LAND");
   if (!extractionRule) return NextResponse.json({ error: "No published extraction rules exist for this state." }, { status: 409 });
   if (!landRule) return NextResponse.json({ error: "No published land rules exist for this state." }, { status: 409 });
+
+  if (isBackgroundExtractionEnabled()) {
+    try {
+      const background = await createBackgroundExtractionRun({
+        valuationId: id,
+        actorId: context.profile.id,
+        customInstructions: valuation.custom_instructions,
+        documents,
+        extractionRule,
+        landRule,
+      });
+      if (background.runId) {
+        after(async () => {
+          try {
+            await advanceBackgroundExtraction(background.runId!);
+          } catch (error) {
+            console.error("[background-extraction] initial advancement failed", { extractionRunId: background.runId, error: error instanceof Error ? error.message : String(error) });
+          }
+        });
+      }
+      return NextResponse.json({ processing: true, background: true, runId: background.runId }, { status: 202 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Extraction could not be started.";
+      if (isAiCreditsExhausted(error)) return NextResponse.json({ error: AI_CREDITS_EXHAUSTED_MESSAGE, code: "AI_CREDITS_EXHAUSTED" }, { status: 402 });
+      return NextResponse.json({ error: message }, { status: message.includes("current valuation stage") ? 409 : 500 });
+    }
+  }
 
   // Claim the valuation before creating a run so double-clicks and other tabs
   // cannot start duplicate extraction work.

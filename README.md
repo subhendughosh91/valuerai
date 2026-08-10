@@ -20,4 +20,4 @@ Open `http://localhost:3000`. The health endpoint is available at `/api/health`.
 
 ## Production integration boundary
 
-The workspace now includes Supabase migrations, RLS, private storage buckets, server APIs, OpenAI structured extraction, deterministic valuation, rule publication, and Word report generation. Add the production credentials from `.env.example`, apply the migrations, and configure the scanner/OCR worker before deployment. See [deployment instructions](docs/DEPLOYMENT.md).
+The workspace now includes Supabase migrations, RLS, private storage buckets, server APIs, OpenAI Background Responses with signed webhook reconciliation, deterministic valuation, rule publication, and Word report generation. Add the production credentials from `.env.example`, apply the migrations, and configure the OpenAI webhook before deployment. No separately hosted OCR worker is required. See [deployment instructions](docs/DEPLOYMENT.md).

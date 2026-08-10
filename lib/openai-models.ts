@@ -12,8 +12,23 @@ const DEFAULT_MODELS = {
   consistency: "gpt-5-nano",
 } as const;
 
+export type ConfiguredReasoningEffort = "minimal" | "low" | "medium" | "high";
+
 function configuredModel(variableName: string, fallback: string) {
   return process.env[variableName]?.trim() || fallback;
+}
+
+function configuredReasoningEffort(variableName: string, model: string): ConfiguredReasoningEffort {
+  const fallback: ConfiguredReasoningEffort = model.toLowerCase().includes("pro") ? "medium" : "low";
+  const configured = process.env[variableName]?.trim().toLowerCase() || fallback;
+  const allowed: ConfiguredReasoningEffort[] = model.toLowerCase().includes("pro")
+    ? ["medium", "high"]
+    : ["minimal", "low", "medium", "high"];
+
+  if (!allowed.includes(configured as ConfiguredReasoningEffort)) {
+    throw new Error(`${variableName}=${configured} is not supported for ${model}. Allowed values: ${allowed.join(", ")}.`);
+  }
+  return configured as ConfiguredReasoningEffort;
 }
 
 export function getExtractionModel() {
@@ -36,6 +51,18 @@ export function getConsistencyModel() {
   return configuredModel("OPENAI_CONSISTENCY_MODEL", DEFAULT_MODELS.consistency);
 }
 
+export function getDocumentReasoningEffort() {
+  return configuredReasoningEffort("OPENAI_DOCUMENT_REASONING_EFFORT", getDocumentModel());
+}
+
+export function getExtractionReasoningEffort() {
+  return configuredReasoningEffort("OPENAI_EXTRACTION_REASONING_EFFORT", getExtractionModel());
+}
+
+export function isBackgroundExtractionEnabled() {
+  return process.env.OPENAI_BACKGROUND_EXTRACTION_ENABLED?.trim().toLowerCase() === "true";
+}
+
 export function getAiModelConfiguration() {
   return {
     document: getDocumentModel(),
@@ -43,5 +70,7 @@ export function getAiModelConfiguration() {
     normalization: getNormalizationModel(),
     valuation: getValuationModel(),
     consistency: getConsistencyModel(),
+    documentReasoningEffort: getDocumentReasoningEffort(),
+    extractionReasoningEffort: getExtractionReasoningEffort(),
   };
 }

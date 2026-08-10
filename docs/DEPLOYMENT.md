@@ -29,22 +29,30 @@ Add these environment variables in **Vercel → Project Settings → Environment
 | `OPENAI_API_KEY` | Server-side OpenAI requests | Server only |
 | `OPENAI_DOCUMENT_MODEL` | JPEG/PDF reading and faithful transcription; `gpt-5.5` | Server only |
 | `OPENAI_EXTRACTION_MODEL` | Structured field extraction; `gpt-5.5` | Server only |
+| `OPENAI_DOCUMENT_REASONING_EFFORT` | Document-reading effort; `low` for standard models, `medium` for Pro | Server only |
+| `OPENAI_EXTRACTION_REASONING_EFFORT` | Structured-extraction effort; `low` for standard models, `medium` for Pro | Server only |
 | `OPENAI_NORMALIZATION_MODEL` | Date, name, identifier, currency, and area formatting; `gpt-5-mini` | Server only |
 | `OPENAI_VALUATION_MODEL` | Land-rule and valuation reasoning; `gpt-5.5` | Server only |
 | `OPENAI_CONSISTENCY_MODEL` | Cost-sensitive contradiction and completeness checks; `gpt-5-nano` | Server only |
+| `OPENAI_BACKGROUND_EXTRACTION_ENABLED` | Rollout switch; start with `false`, then set `true` after webhook configuration | Server only |
+| `OPENAI_WEBHOOK_SECRET` | Signing secret supplied by the OpenAI webhook configuration | Server only |
 | `APP_URL` | Exact deployed URL, e.g. `https://valuerai.vercel.app` | Server only |
 
 For Preview deployments, use a separate Supabase project and separate OpenAI project key before adding the server-only variables. Do not attach production Supabase or OpenAI credentials to Preview deployments. Set `APP_URL` to the corresponding preview URL only if email confirmation is being tested there. Do not add `SUPABASE_SERVICE_ROLE_KEY` or `OPENAI_API_KEY` to any variable beginning with `NEXT_PUBLIC_`.
 
 After the first deployment, set Supabase Auth **Site URL** to the production Vercel URL and add both the production URL and any required preview URLs to Supabase Auth **Redirect URLs**.
 
-## 3. Synchronous document extraction
+## 3. Background document extraction
 
 Applying migration `202608080006_remove_document_processing_queue.sql` removes the retired background queue. Uploading a document only stores it in private Supabase Storage and records its metadata; it does not call OpenAI.
 
-After the mandatory Sale Deed is present, the user selects **Start Valuation**. That synchronous request reads each uploaded document with `OPENAI_DOCUMENT_MODEL`, extracts structured fields with `OPENAI_EXTRACTION_MODEL`, normalises supported formats with `OPENAI_NORMALIZATION_MODEL`, and checks contradictions and completeness with `OPENAI_CONSISTENCY_MODEL`. Valuation reasoning uses `OPENAI_VALUATION_MODEL`; monetary arithmetic and the Word report remain deterministic application code. OpenAI requests use `store: false`. No separate OCR worker is required. Virus scanning is excluded by product decision.
+After the mandatory Sale Deed is present, the user selects **Start Valuation**. With `OPENAI_BACKGROUND_EXTRACTION_ENABLED=true`, the route creates a durable database run, submits a maximum of two document-reading Responses concurrently, and returns `202` immediately. OpenAI response events are received at `https://<production-domain>/api/openai/webhook`; the UI also reconciles progress through `/api/valuations/:id/extraction-status` every three seconds while visible. Completed OCR text is reused on retry. Structured extraction runs only after every document transcription completes, followed by the existing parallel normalisation and consistency checks.
 
-`gpt-5.5-pro` can be assigned to `OPENAI_VALUATION_MODEL`, but it is not the default for this synchronous Vercel workflow because Pro requests can take several minutes. Move valuation processing to a durable background workflow before enabling that model in production.
+OpenAI requests retain `store: false`; background results are retrieved only during OpenAI's temporary background-response availability window. No separately hosted OCR worker is required. Monetary arithmetic and the Word report remain deterministic application code. Virus scanning remains excluded by product decision.
+
+Create an OpenAI webhook for the exact production URL, subscribe to `response.completed`, `response.failed`, `response.incomplete`, and `response.cancelled`, then place its signing secret in `OPENAI_WEBHOOK_SECRET`. Apply migration `20260810180631_openai_background_extraction.sql` before enabling the flag. Deploy first with the flag disabled, configure and verify the webhook, enable it with GPT-5.1 for one acceptance run, and only then change the document and extraction models to GPT-5.2 or GPT-5.5.
+
+The existing synchronous extraction implementation remains available while the rollout flag is `false`. Do not remove it until production acceptance testing is complete.
 
 ## 4. Operational controls
 

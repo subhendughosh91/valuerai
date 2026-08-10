@@ -1,24 +1,29 @@
 import OpenAI from "openai";
 import { extractionJsonSchema, extractionSchema, normalizeExtractionResult, type MinimumExtractionResult } from "./extraction-contract";
-import { getExtractionModel } from "./openai-models";
+import { getExtractionModel, getExtractionReasoningEffort, type ConfiguredReasoningEffort } from "./openai-models";
 
-export async function extractTripuraValuation({ rules, documents, customInstructions }: {
+type ExtractionRequest = {
   rules: string;
   documents: Array<{ id: string; kind: string; name: string; text: string }>;
   customInstructions?: string | null;
-}): Promise<MinimumExtractionResult> {
-  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 120_000, maxRetries: 1 });
+};
+
+export function buildStructuredExtractionRequest(
+  { rules, documents, customInstructions }: ExtractionRequest,
+  options?: { background?: boolean; model?: string; reasoningEffort?: ConfiguredReasoningEffort },
+) {
   const supplementalContext = customInstructions?.trim()
     ? `User-provided custom instructions:\n${customInstructions.trim()}`
     : "User-provided custom instructions: None.";
-  const response = await client.responses.create({
-    model: getExtractionModel(),
-    reasoning: { effort: "low" },
+
+  return {
+    model: options?.model || getExtractionModel(),
+    reasoning: { effort: options?.reasoningEffort || getExtractionReasoningEffort() },
+    background: options?.background || false,
     store: false,
     input: [
       {
-        role: "system",
+        role: "system" as const,
         content: `You are the ValuerAI document Extraction Engine. Return the complete structured extraction contract supplied in the response schema.
 
 Rules:
@@ -35,11 +40,22 @@ Rules:
 - Photographs are supporting evidence only and must not be used to infer legal ownership.`,
       },
       {
-        role: "user",
+        role: "user" as const,
         content: `Published state extraction and land instructions:\n${rules}\n\n${supplementalContext}\n\nDocument OCR text:\n${documents.map((document) => `DOCUMENT ID: ${document.id}\nDOCUMENT TYPE: ${document.kind}\nFILENAME: ${document.name}\n${document.text}`).join("\n\n")}`,
       },
     ],
-    text: { format: { type: "json_schema", name: "valuerai_minimum_source_document_extraction", strict: true, schema: extractionJsonSchema } },
-  });
+    text: { format: { type: "json_schema" as const, name: "valuerai_minimum_source_document_extraction", strict: true, schema: extractionJsonSchema } },
+  };
+}
+
+export function parseStructuredExtractionResponse(response: { output_text: string }): MinimumExtractionResult {
+  if (!response.output_text.trim()) throw new Error("Structured extraction returned no data.");
   return extractionSchema.parse(normalizeExtractionResult(JSON.parse(response.output_text)));
+}
+
+export async function extractTripuraValuation(request: ExtractionRequest): Promise<MinimumExtractionResult> {
+  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 120_000, maxRetries: 1 });
+  const response = await client.responses.create(buildStructuredExtractionRequest(request));
+  return parseStructuredExtractionResponse(response);
 }

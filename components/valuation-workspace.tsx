@@ -121,6 +121,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     try {
       const loadedValuation = (await api(`/api/valuations/${id}`)).valuation;
       setValuation(loadedValuation);
+      setExtracting(loadedValuation.status === "EXTRACTING");
       setCustomInstructions(loadedValuation.custom_instructions || "");
       const editableData = loadedValuation.approved_data || loadedValuation.extraction_data;
       setReviewData(editableData && Object.keys(editableData).length ? normalizeExtractionResult(editableData) : null);
@@ -141,49 +142,68 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   }, []);
 
   useEffect(() => {
-    if (!extracting || !valuation?.id) return;
+    if ((!extracting && valuation?.status !== "EXTRACTING") || !valuation?.id) return;
     let stopped = false;
+    let polling = false;
 
     async function refreshExtractionProgress() {
+      if (polling || document.visibilityState !== "visible") return;
+      polling = true;
       try {
-        const response = await fetch(`/api/valuations/${valuation.id}`);
-        if (!response.ok || stopped) return;
-        const body = await response.json();
-        const currentValuation = body.valuation;
-        const currentDocuments = currentValuation?.valuation_documents || [];
-        const total = currentDocuments.length;
-        const completed = currentDocuments.filter((document: any) => Boolean(document.ocr_text)).length;
-        const runningDocument = currentDocuments.find((document: any) => document.processing_metadata?.ocrStatus === "RUNNING");
+        const current = (await api(`/api/valuations/${valuation.id}/extraction-status`)).extraction;
+        if (stopped) return;
+        const total = current.documentCount || valuation.valuation_documents?.length || 0;
+        const completed = current.completedDocuments || 0;
 
-        if (currentValuation?.status === "REVIEW_REQUIRED") {
-          setExtractionProgress({ phase: "REVIEW", title: "Extraction complete", detail: "Opening the extracted-data review screen.", completed, total, percent: 98 });
-        } else if (runningDocument) {
+        if (current.phase === "COMPLETE") {
+          setExtractionProgress({ phase: "REVIEW", title: "Extraction complete", detail: "Opening the extracted-data review screen.", completed: total, total, percent: 100 });
+          setBusy(false);
+          extractionInFlight.current = false;
+          await new Promise((resolve) => window.setTimeout(resolve, 500));
+          if (!stopped) {
+            await open(valuation.id);
+            setMessage("Extraction complete. Review the extracted data and confirm when ready.");
+          }
+        } else if (current.phase === "FAILED") {
+          setBusy(false);
+          extractionInFlight.current = false;
+          await open(valuation.id);
+          setMessage(current.error || "Extraction failed. Your uploaded documents have been retained; select Start Valuation to retry.");
+        } else if (current.phase === "DOCUMENT_READING") {
           setExtractionProgress({
             phase: "OCR",
             title: "Document text extraction in progress",
-            detail: `Reading ${runningDocument.original_filename}`,
+            detail: current.activeDocuments > 1 ? "Reading two uploaded documents in parallel." : "Reading the next uploaded document.",
             completed,
             total,
             percent: Math.min(76, 15 + Math.round((completed / Math.max(total, 1)) * 60)),
           });
-        } else if (total > 0 && completed === total) {
-          setExtractionProgress({ phase: "AI", title: "AI extraction in progress", detail: "Analysing the combined document text and applying the published state rules.", completed, total, percent: 86 });
+        } else if (current.phase === "STRUCTURED_EXTRACTION") {
+          setExtractionProgress({ phase: "AI", title: "AI extraction in progress", detail: `Analysing the combined document text and applying the published state rules${current.model ? ` with ${current.model}` : ""}.`, completed, total, percent: 84 });
+        } else if (current.phase === "POST_PROCESSING") {
+          setExtractionProgress({ phase: "AI", title: "Validating extracted information", detail: "Normalising the extracted fields and checking document consistency.", completed, total, percent: 93 });
         } else {
           setExtractionProgress({ phase: "PREPARING", title: "Preparing uploaded documents", detail: "Validating the secure files before document text extraction begins.", completed, total, percent: 10 });
         }
       } catch {
-        // The extraction request remains authoritative; a temporary status-poll
-        // failure should not interrupt processing.
+        // A temporary status-poll failure does not stop the durable background run.
+      } finally {
+        polling = false;
       }
     }
 
     void refreshExtractionProgress();
-    const timer = window.setInterval(() => void refreshExtractionProgress(), 1200);
+    const timer = window.setInterval(() => void refreshExtractionProgress(), 3000);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refreshExtractionProgress();
+    };
+    document.addEventListener("visibilitychange", refreshWhenVisible);
     return () => {
       stopped = true;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, [extracting, valuation?.id]);
+  }, [extracting, valuation?.id, valuation?.status]);
 
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -326,9 +346,15 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     setMessage("Document text extraction and AI valuation extraction are in progress. Please keep this page open.");
     const controller = new AbortController();
     extractionRequestController.current = controller;
+    let backgroundProcessing = false;
     try {
       const result = await api(`/api/valuations/${valuation.id}/extract`, { method: "POST", signal: controller.signal });
-      if (result.processing) await waitForExtractionCompletion(valuation.id);
+      if (result.processing) {
+        backgroundProcessing = true;
+        setValuation((current: any) => current ? { ...current, status: "EXTRACTING", processing_error: null } : current);
+        setMessage("Background document reading and AI extraction are in progress. Progress is saved automatically, so this valuation can be reopened later.");
+        return;
+      }
       setExtractionProgress({ phase: "REVIEW", title: "Extraction complete", detail: "Preparing the editable review form.", completed: valuation.valuation_documents?.length || 0, total: valuation.valuation_documents?.length || 0, percent: 100 });
       await new Promise((resolve) => window.setTimeout(resolve, 650));
       await open(valuation.id);
@@ -340,7 +366,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
       setMessage(error.message);
     } finally {
       if (extractionRequestController.current === controller) extractionRequestController.current = null;
-      setExtracting(false);
+      if (!backgroundProcessing) setExtracting(false);
       if (!extractionCancelled.current) setBusy(false);
       extractionInFlight.current = false;
     }
@@ -367,18 +393,6 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     } finally {
       setBusy(false);
     }
-  }
-
-  async function waitForExtractionCompletion(id: string) {
-    const deadline = Date.now() + 10 * 60 * 1000;
-    while (Date.now() < deadline) {
-      const current = (await api(`/api/valuations/${id}`)).valuation;
-      if (current.status === "REVIEW_REQUIRED") return;
-      if (current.status === "UPLOADING" && current.processing_error) throw new Error(current.processing_error);
-      if (current.status !== "EXTRACTING") throw new Error("Extraction stopped before completion. Please try again.");
-      await new Promise((resolve) => window.setTimeout(resolve, 1500));
-    }
-    throw new Error("Extraction is still running. Reopen this valuation shortly to review the result.");
   }
 
   async function saveCustomInstructions() {
@@ -728,7 +742,7 @@ function ExtractionProgressPanel({ progress, onCancel, busy = false }: { progres
             return <div className={`extraction-step ${state}`} key={step.key}><span>{state === "complete" ? "✓" : ""}</span><small>{step.label}</small></div>;
           })}
         </div>
-        <p className="extraction-wait-note">Please keep this tab open while processing continues.</p>
+        <p className="extraction-wait-note">Progress is saved automatically. You may leave this tab and reopen the valuation later.</p>
         {onCancel && <button className="button danger" disabled={busy} onClick={onCancel}>{busy ? "Cancelling…" : "Cancel"}</button>}
       </div>
     </section>

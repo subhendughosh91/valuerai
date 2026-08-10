@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireProfile } from "../../../../lib/auth";
+import { isBackgroundExtractionEnabled } from "../../../../lib/openai-models";
 
 export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const context = await requireProfile();
@@ -17,7 +18,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
   // platform before its catch block runs. Recover runs that have exceeded the
   // extraction route's maximum duration so the user is not left permanently
   // on an EXTRACTING screen. Uploaded files and completed OCR text are retained.
-  if (data.status === "EXTRACTING") {
+  if (data.status === "EXTRACTING" && !isBackgroundExtractionEnabled()) {
     const { data: latestRun } = await context.supabase
       .from("extraction_runs")
       .select("id,status,started_at")

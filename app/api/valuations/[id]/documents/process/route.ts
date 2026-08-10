@@ -21,6 +21,6 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   return NextResponse.json({
     queued: [],
     completed: documents.filter((document) => Boolean(document.ocr_text)).map((document) => document.id),
-    message: "OCR runs synchronously when each document upload is completed.",
+    message: "Document text extraction starts synchronously when Start Valuation is selected.",
   });
 }

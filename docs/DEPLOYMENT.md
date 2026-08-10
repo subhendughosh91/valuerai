@@ -9,7 +9,7 @@
 
 ```sql
 update public.profiles
-set role = 'ADMIN'
+set role = 'ADMIN', state_code = null
 where id = (select id from auth.users where email = 'owner@example.com');
 ```
 
@@ -37,9 +37,9 @@ After the first deployment, set Supabase Auth **Site URL** to the production Ver
 
 ## 3. Synchronous document extraction
 
-Applying migration `202608080006_remove_document_processing_queue.sql` removes the retired background queue. When a document upload is completed, the ValuerAI API downloads the private file, calls the OpenAI Responses API, waits for the transcription, stores the text, and returns the result in the same request. No OCR worker or separate worker host is required.
+Applying migration `202608080006_remove_document_processing_queue.sql` removes the retired background queue. Uploading a document only stores it in private Supabase Storage and records its metadata; it does not call OpenAI.
 
-The user then selects **Run AI extraction** after all document text is ready. That request also waits for the extraction response and opens the review screen. Both OCR and extraction requests use `store: false`. Virus scanning is excluded by product decision.
+After both mandatory documents are present, the user selects **Start Valuation**. That single synchronous request transcribes every uploaded document, runs structured AI extraction, stores the results, and opens the review screen. OpenAI requests use `store: false`. No separate OCR worker is required. Virus scanning is excluded by product decision.
 
 ## 4. Operational controls
 

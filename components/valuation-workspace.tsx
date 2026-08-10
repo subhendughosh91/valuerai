@@ -17,14 +17,15 @@ const documents = [
   ["OTHER", "Other documents"],
 ] as const;
 
-type UploadStage = "QUEUED" | "UPLOADING" | "PROCESSING" | "READY" | "FAILED";
-type UploadEntry = { id: string; name: string; stage: UploadStage; error?: string };
+type UploadStage = "QUEUED" | "UPLOADING" | "UPLOADED" | "PROCESSING" | "READY" | "FAILED";
+type UploadEntry = { id: string; documentId?: string; name: string; stage: UploadStage; error?: string };
 
 const uploadStageLabel: Record<UploadStage, string> = {
   QUEUED: "Waiting to upload",
   UPLOADING: "Uploading file…",
-  PROCESSING: "Uploaded — extracting document text…",
-  READY: "Ready for AI extraction",
+  UPLOADED: "Uploaded — waiting for Start Valuation",
+  PROCESSING: "Extracting document text…",
+  READY: "Document text extracted",
   FAILED: "Upload or document processing failed",
 };
 
@@ -36,6 +37,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   const [busy, setBusy] = useState(false);
   const [otherDocumentTypes, setOtherDocumentTypes] = useState("");
   const [uploadStatus, setUploadStatus] = useState<Record<string, UploadEntry[]>>({});
+  const [extracting, setExtracting] = useState(false);
 
   const stateName = useMemo(
     () => INDIA_STATE_OPTIONS.find(([code]) => code === profile.state_code)?.[1] ?? "State unavailable",
@@ -63,7 +65,9 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   };
 
   useEffect(() => {
-    void loadList().catch((error) => setMessage(error.message));
+    const valuationId = new URLSearchParams(window.location.search).get("valuation");
+    if (valuationId) void open(valuationId);
+    else void loadList().catch((error) => setMessage(error.message));
   }, []);
 
   async function create() {
@@ -140,8 +144,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
         });
         if (!uploaded.ok) throw Error(`Upload failed: ${file.name}`);
 
-        updateUploadEntry(kind, entry.id, { stage: "PROCESSING" });
-        await api(`/api/valuations/${valuation.id}/documents/complete`, {
+        const completed = await api(`/api/valuations/${valuation.id}/documents/complete`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -153,7 +156,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
             otherDocumentTypes: types,
           }),
         });
-        updateUploadEntry(kind, entry.id, { stage: "READY" });
+        updateUploadEntry(kind, entry.id, { stage: "UPLOADED", documentId: completed.document.id });
       } catch (error: any) {
         const errorMessage = error.message || "Upload failed.";
         failures.push(`${file.name}: ${errorMessage}`);
@@ -164,7 +167,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     await open(valuation.id);
     setMessage(failures.length
       ? `Some files could not be completed: ${failures.join(" ")}`
-      : "Selected document upload and text extraction completed.");
+      : "Selected files were uploaded. Document text will be extracted only after Start Valuation is clicked.");
     setBusy(false);
     input.value = "";
   }
@@ -175,11 +178,35 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     if (!confirmed) return;
 
     setBusy(true);
-    setMessage("AI extraction is in progress. Please keep this page open.");
+    setExtracting(true);
+    setUploadStatus((current) => Object.fromEntries(Object.entries(current).map(([kind, entries]) => [kind, entries.map((entry) => entry.stage === "UPLOADED" ? { ...entry, stage: "PROCESSING" as UploadStage } : entry)])));
+    setMessage("Document text extraction and AI valuation extraction are in progress. Please keep this page open.");
     try {
       await api(`/api/valuations/${valuation.id}/extract`, { method: "POST" });
       await open(valuation.id);
       setMessage("Extraction complete. Review the extracted data and confirm when ready.");
+    } catch (error: any) {
+      setUploadStatus({});
+      await open(valuation.id);
+      setMessage(error.message);
+    } finally {
+      setExtracting(false);
+      setBusy(false);
+    }
+  }
+
+  async function removeDocument(documentId: string, kind: string, localEntryId?: string) {
+    if (!valuation || busy) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      await api(`/api/valuations/${valuation.id}/documents/${documentId}`, { method: "DELETE" });
+      setUploadStatus((current) => ({
+        ...current,
+        [kind]: (current[kind] || []).filter((entry) => entry.id !== localEntryId && entry.documentId !== documentId),
+      }));
+      await open(valuation.id);
+      setMessage("The selected file was removed.");
     } catch (error: any) {
       setMessage(error.message);
     } finally {
@@ -230,8 +257,15 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   function persistedStage(document: any): UploadStage {
     if (document.ocr_text) return "READY";
     if (document.processing_metadata?.ocrStatus === "FAILED") return "FAILED";
-    return "PROCESSING";
+    if (extracting || document.processing_metadata?.ocrStatus === "RUNNING") return "PROCESSING";
+    return "UPLOADED";
   }
+
+  const uploadedKinds = new Set((valuation?.valuation_documents || []).map((document: any) => document.kind));
+  const mandatoryDocumentsUploaded = uploadedKinds.has("SALE_DEED") && uploadedKinds.has("KHATIYAN");
+
+  const formatStartDate = (value: string) => new Date(value).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric" });
+  const formatStartTime = (value: string) => new Date(value).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
   return (
     <main className="app-shell">
@@ -256,8 +290,8 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
             <div className="panel">
               <h2>Valuation history</h2>
               <table>
-                <thead><tr><th>Reference</th><th>Property</th><th>Status</th></tr></thead>
-                <tbody>{valuations.map((item) => <tr key={item.id} onClick={() => void open(item.id)}><td><b>{item.reference_no}</b></td><td>{item.property_label || "Property valuation"}</td><td>{item.status.replaceAll("_", " ")}</td></tr>)}</tbody>
+                <thead><tr><th>Reference</th><th>Property</th><th>Valuation start date</th><th>Valuation start time</th><th>Status</th></tr></thead>
+                <tbody>{valuations.map((item) => <tr key={item.id}><td><a className="valuation-reference" href={`/?valuation=${item.id}`} target="_blank" rel="noopener noreferrer">{item.reference_no}</a></td><td>{item.property_label || "Property valuation"}</td><td>{formatStartDate(item.created_at)}</td><td>{formatStartTime(item.created_at)}</td><td>{item.status.replaceAll("_", " ")}</td></tr>)}</tbody>
               </table>
             </div>
           </>
@@ -267,10 +301,10 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
             <header className="topbar"><div><p className="eyebrow">{valuation.reference_no}</p><h1>{valuation.property_label || "New valuation"}</h1></div></header>
             {message && <p className="notice">{message}</p>}
 
-            {valuation.status === "UPLOADING" && (
+            {["DRAFT", "UPLOADING"].includes(valuation.status) && (
               <div className="panel">
                 <div className="panel-heading">
-                  <div><h2>Upload documents</h2><p>Each section shows whether its selected files are uploading, being processed, ready, or failed.</p></div>
+                  <div><h2>Upload documents</h2><p>Files are stored securely when uploaded. Document text extraction starts only after you click Start Valuation.</p></div>
                 </div>
                 <div className="upload-grid">
                   {documents.map(([kind, label]) => {
@@ -280,7 +314,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
                       <div className="upload-card" key={kind}>
                         <label className="upload-select" htmlFor={`upload-${kind}`}>
                           <span className="upload-icon">↑</span>
-                          <b>{label}</b>
+                          <b>{label}{(kind === "SALE_DEED" || kind === "KHATIYAN") && <span className="mandatory-mark"> *</span>}</b>
                           <small>{kind === "OTHER" ? "Select one or more files" : "PDF, DOC, DOCX or image"}</small>
                           <input id={`upload-${kind}`} type="file" multiple={kind === "OTHER"} accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp" disabled={busy} onChange={(event) => void upload(kind, event)} />
                         </label>
@@ -297,16 +331,17 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
                           {!localEntries.length && !savedEntries.length && <p className="upload-empty">No file selected</p>}
                           {savedEntries.map((document: any) => {
                             const stage = persistedStage(document);
-                            return <div className={`upload-file-status status-${stage.toLowerCase()}`} key={document.id}><span /><div><strong>{document.original_filename}</strong><small>{uploadStageLabel[stage]}</small></div></div>;
+                            return <div className={`upload-file-status status-${stage.toLowerCase()}`} key={document.id}><span /><div><strong>{document.original_filename}</strong><small>{uploadStageLabel[stage]}</small></div><button type="button" className="remove-upload" disabled={busy} aria-label={`Remove ${document.original_filename}`} title="Remove file" onClick={() => void removeDocument(document.id, kind)}>×</button></div>;
                           })}
-                          {localEntries.map((entry) => <div className={`upload-file-status status-${entry.stage.toLowerCase()}`} key={entry.id}><span /><div><strong>{entry.name}</strong><small>{entry.error || uploadStageLabel[entry.stage]}</small></div></div>)}
+                          {localEntries.map((entry) => <div className={`upload-file-status status-${entry.stage.toLowerCase()}`} key={entry.id}><span /><div><strong>{entry.name}</strong><small>{entry.error || uploadStageLabel[entry.stage]}</small></div>{entry.documentId && <button type="button" className="remove-upload" disabled={busy} aria-label={`Remove ${entry.name}`} title="Remove file" onClick={() => void removeDocument(entry.documentId!, kind, entry.id)}>×</button>}</div>)}
                         </div>
                       </div>
                     );
                   })}
                 </div>
+                {!mandatoryDocumentsUploaded && <p className="mandatory-note">* Sale Deed and Khatiyan must both be uploaded before valuation can start.</p>}
                 <div className="action-row upload-actions">
-                  <button className="button primary" disabled={busy} onClick={() => void extract()}>{busy ? "Please wait…" : "Run AI extraction"}</button>
+                  <button className="button primary" disabled={busy || !mandatoryDocumentsUploaded} onClick={() => void extract()}>{busy ? "Please wait…" : "Start Valuation"}</button>
                   <button className="button danger" disabled={busy} onClick={() => void cancelValuation()}>Cancel valuation</button>
                 </div>
               </div>
@@ -319,6 +354,14 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
                 <pre>{JSON.stringify(valuation.extraction_data, null, 2)}</pre>
                 <button className="button danger" onClick={() => void reset()}>Reupload documents</button>
               </div>
+            )}
+
+            {valuation.status === "EXTRACTING" && (
+              <div className="panel"><h2>Extraction in progress</h2><p className="muted">ValuerAI is extracting document text and structured valuation data.</p><button className="button secondary" onClick={() => void open(valuation.id)}>Refresh status</button></div>
+            )}
+
+            {!["DRAFT", "UPLOADING", "REVIEW_REQUIRED", "EXTRACTING"].includes(valuation.status) && (
+              <div className="panel"><h2>Valuation status: {valuation.status.replaceAll("_", " ")}</h2><p className="muted">This valuation has been reopened at its latest saved execution status.</p>{valuation.processing_error && <p className="notice">{valuation.processing_error}</p>}</div>
             )}
           </>
         )}

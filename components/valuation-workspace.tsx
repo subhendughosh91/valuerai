@@ -67,7 +67,16 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   );
 
   const api = async (url: string, init?: RequestInit) => {
-    const response = await fetch(url, init);
+    let response = await fetch(url, init);
+    if (response.status === 401) {
+      const { data, error } = await supabase.auth.refreshSession();
+      if (!error && data.session) response = await fetch(url, init);
+    }
+    if (response.status === 401) {
+      await supabase.auth.signOut({ scope: "local" });
+      window.location.assign("/");
+      throw Error("Your session has expired. Please sign in again.");
+    }
     const rawBody = await response.text();
     let body: any = {};
     if (rawBody) {

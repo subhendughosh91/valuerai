@@ -46,6 +46,8 @@ export function ProductionApp() {
   }
 
   useEffect(() => {
+    void load();
+
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, session: Session | null) => {
@@ -55,7 +57,9 @@ export function ProductionApp() {
         return;
       }
 
-      void load();
+      // Defer Supabase calls until the auth-state callback has released its
+      // internal lock. Calling another auth method inline can stall updates.
+      window.setTimeout(() => void load(), 0);
     });
 
     return () => subscription.unsubscribe();

@@ -397,6 +397,12 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
       setValuationPhase("COMPLETE");
       await new Promise((resolve) => window.setTimeout(resolve, 500));
       await open(valuation.id);
+      const download = document.createElement("a");
+      download.href = generated.downloadUrl;
+      download.download = `${valuation.reference_no}.docx`;
+      document.body.appendChild(download);
+      download.click();
+      download.remove();
     } catch (error: any) {
       setMessage(error.message);
     } finally {

@@ -16,6 +16,7 @@ import {
   VerticalAlign,
   WidthType,
 } from "docx";
+import { toLegacyExtractedValuation } from "./extraction-contract";
 
 const blue = "2F5DA8";
 const ink = "222222";
@@ -91,6 +92,7 @@ function keyPlan(deeds: any[], approved: any) {
 }
 
 export async function createSbiStyleValuationReport({ referenceNo, userName, approved, calculation }: { referenceNo: string; userName: string; approved: any; calculation: any }) {
+  approved = toLegacyExtractedValuation(approved);
   const deeds = Array.isArray(approved.deeds) ? approved.deeds : [];
   const landClasses = Array.isArray(approved.landClasses) ? approved.landClasses : [];
   const locality = approved.locality ?? {};
@@ -112,7 +114,6 @@ export async function createSbiStyleValuationReport({ referenceNo, userName, app
       footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [text(`${referenceNo} | Page `, { size: 15, color: muted }), new TextRun({ children: [PageNumber.CURRENT], size: 15, color: muted })] })] }) },
       children: [
         paragraph("VALUATION REPORT", { bold: true, size: 36, color: blue, align: AlignmentType.CENTER, before: 280, after: 40 }),
-        paragraph("SBI-style property valuation format", { bold: true, size: 21, color: ink, align: AlignmentType.CENTER, after: 240 }),
         table([new TableRow({ children: [reportCell("Reference No.", { bold: true, fill: paleBlue }), reportCell(referenceNo), reportCell("Date", { bold: true, fill: paleBlue }), reportCell(reportDate)] })], [1700, 3000, 1600, 2800]),
         paragraph("VALUATION CERTIFICATE", { bold: true, size: 28, color: ink, align: AlignmentType.CENTER, before: 240, after: 110 }),
         line(`This is to certify that the property situated at ${property}, owned by ${owner}, has been assessed from the approved information and documents available for this assignment. This report records unavailable information as N/A.`),

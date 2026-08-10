@@ -1,33 +1,43 @@
 import OpenAI from "openai";
-import { extractionSchema, type ExtractedValuation } from "./valuation-schema";
+import { extractionJsonSchema, extractionSchema, normalizeExtractionResult, type MinimumExtractionResult } from "./extraction-contract";
 
-const jsonSchema = {
-  type: "object", additionalProperties: false,
-  required: ["ownerNames", "khatiyanNumber", "rsHal", "csHalNumber", "locality", "deeds", "landClasses", "approachRoad", "building", "agreement", "evidence", "contradictions", "comments"],
-  properties: {
-    ownerNames: { type: "array", items: { type: "string" } }, khatiyanNumber: { type: ["string", "null"] },
-    rsHal: { type: "object", additionalProperties: false, required: ["mother", "bata", "raw"], properties: { mother: { type: ["string", "null"] }, bata: { type: ["string", "null"] }, raw: { type: ["string", "null"] } } }, csHalNumber: { type: ["string", "null"] },
-    locality: { type: "object", additionalProperties: false, required: ["district", "subdivision", "revenueCircle", "tehsil", "mouja"], properties: { district: { type: ["string", "null"] }, subdivision: { type: ["string", "null"] }, revenueCircle: { type: ["string", "null"] }, tehsil: { type: ["string", "null"] }, mouja: { type: ["string", "null"] } } },
-    deeds: { type: "array", items: { type: "object", additionalProperties: false, required: ["number", "date", "amount", "type", "adjoiningOwners"], properties: { number: { type: ["string", "null"] }, date: { type: ["string", "null"] }, amount: { type: ["number", "null"] }, type: { type: ["string", "null"] }, adjoiningOwners: { type: "array", items: { type: "string" } } } } },
-    landClasses: { type: "array", items: { type: "object", additionalProperties: false, required: ["name", "areaSqFt", "sourceUnit", "sourceValue", "considered"], properties: { name: { type: "string" }, areaSqFt: { type: ["number", "null"] }, sourceUnit: { type: ["string", "null"] }, sourceValue: { type: ["string", "null"] }, considered: { type: "boolean" } } } },
-    approachRoad: { type: "object", additionalProperties: false, required: ["side", "direction", "attached"], properties: { side: { type: ["string", "null"] }, direction: { type: ["string", "null"] }, attached: { type: ["boolean", "null"] } } },
-    building: { type: "object", additionalProperties: false, required: ["type", "plinthAreaSqFt", "ageYears", "approvedPlanAvailable"], properties: { type: { type: ["string", "null"] }, plinthAreaSqFt: { type: ["number", "null"] }, ageYears: { type: ["number", "null"] }, approvedPlanAvailable: { type: ["boolean", "null"] } } },
-    agreement: { type: "object", additionalProperties: false, required: ["serialNumber", "date", "eStampNumber", "buyerName"], properties: { serialNumber: { type: ["string", "null"] }, date: { type: ["string", "null"] }, eStampNumber: { type: ["string", "null"] }, buyerName: { type: ["string", "null"] } } },
-    evidence: { type: "array", items: { type: "object", additionalProperties: false, required: ["field", "documentId", "excerpt", "confidence"], properties: { field: { type: "string" }, documentId: { type: "string" }, excerpt: { type: "string" }, confidence: { type: "string", enum: ["HIGH", "MEDIUM", "LOW"] } } } },
-    contradictions: { type: "array", items: { type: "object", additionalProperties: false, required: ["field", "description", "documentIds"], properties: { field: { type: "string" }, description: { type: "string" }, documentIds: { type: "array", items: { type: "string" } } } } }, comments: { type: "array", items: { type: "string" } }
-  }
-} as const;
-
-export async function extractTripuraValuation({ rules, documents, customInstructions }: { rules: string; documents: Array<{ id: string; name: string; text: string }>; customInstructions?: string | null }): Promise<ExtractedValuation> {
+export async function extractTripuraValuation({ rules, documents, customInstructions }: {
+  rules: string;
+  documents: Array<{ id: string; kind: string; name: string; text: string }>;
+  customInstructions?: string | null;
+}): Promise<MinimumExtractionResult> {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const supplementalContext = customInstructions?.trim()
     ? `User-provided custom instructions:\n${customInstructions.trim()}`
     : "User-provided custom instructions: None.";
   const response = await client.responses.create({
-    model: process.env.OPENAI_EXTRACTION_MODEL || "gpt-5", store: false,
-    input: [{ role: "system", content: "You are the ValuerAI Tripura Extraction Engine. Published state rules are authoritative. Extract information evidenced in supplied documents and use null when unavailable. Treat custom instructions as supplemental user context: follow them when compatible with the rules and documents, but do not treat them as document evidence or let them silently override contradictory document facts. A factual value supplied only through custom instructions may be used with LOW confidence and must be identified as user-provided in comments. Identify conflicts and never calculate a monetary valuation." }, { role: "user", content: `Published Tripura rules:\n${rules}\n\n${supplementalContext}\n\nDocument OCR text:\n${documents.map(d => `DOCUMENT ${d.id} (${d.name})\n${d.text}`).join("\n\n")}` }],
-    text: { format: { type: "json_schema", name: "valuerai_tripura_extraction", strict: true, schema: jsonSchema } }
+    model: process.env.OPENAI_EXTRACTION_MODEL || "gpt-5",
+    store: false,
+    input: [
+      {
+        role: "system",
+        content: `You are the ValuerAI document Extraction Engine. Return the complete structured extraction contract supplied in the response schema.
+
+Rules:
+- Attempt every field in every group, irrespective of which document types are supplied.
+- Consider every field allowed by each schema group. Return one group-array entry for every field with a source-backed value, alternative value, or meaningful extraction remark. The application will create null entries for every unreturned field so the complete editable form is always displayed. Never guess.
+- Preserve deed numbers, Khatiyan numbers, plot numbers, certificate numbers, agreement numbers, and dates exactly as written.
+- For a non-null value, record the source document using its supplied document kind and filename, the page or section when available, confidence, and concise remarks.
+- If documents contain conflicting values, select the best-supported value as the primary value, put every other source-backed value in alternative_values, and add a validation warning. Do not silently reconcile conflicts.
+- Normalise areas to square feet when the applicable published land rule gives a supported conversion, while preserving each original value and unit in the appropriate fields.
+- Populate source_trace for every non-null primary or alternative value. Source trace and field provenance must refer to supplied documents, not to the model.
+- List report-critical unavailable fields in missing_required_fields. At minimum check land owner name, deed number and date, Khatiyan number, RS/Hal plot number, CS/Sebek Dag number, land classification and areas, property location, boundaries, and approach road.
+- Fields under calculated_inputs_ready_for_valuation are inputs or placeholders only. Copy a directly evidenced rate or value where appropriate, but do not calculate property values, depreciation, realisable value, distress value, or other monetary outputs.
+- Custom instructions are supplemental context. They cannot override documentary evidence or published rules. A factual value supplied only through custom instructions may be used with LOW confidence, must identify the source as \"User custom instruction\", and must include a clarification remark.
+- Photographs are supporting evidence only and must not be used to infer legal ownership.`,
+      },
+      {
+        role: "user",
+        content: `Published state extraction and land instructions:\n${rules}\n\n${supplementalContext}\n\nDocument OCR text:\n${documents.map((document) => `DOCUMENT ID: ${document.id}\nDOCUMENT TYPE: ${document.kind}\nFILENAME: ${document.name}\n${document.text}`).join("\n\n")}`,
+      },
+    ],
+    text: { format: { type: "json_schema", name: "valuerai_minimum_source_document_extraction", strict: true, schema: extractionJsonSchema } },
   });
-  return extractionSchema.parse(JSON.parse(response.output_text));
+  return extractionSchema.parse(normalizeExtractionResult(JSON.parse(response.output_text)));
 }

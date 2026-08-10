@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { EXTRACTION_GROUPS, normalizeExtractionResult, type ExtractionFieldKind } from "../lib/extraction-contract";
 import { INDIA_STATE_OPTIONS } from "../lib/india-states";
 import { createSupabaseBrowserClient } from "../lib/supabase/browser";
 
@@ -35,6 +36,7 @@ const uploadStageLabel: Record<UploadStage, string> = {
 export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSignOut: () => void }) {
   const supabase = createSupabaseBrowserClient();
   const [valuations, setValuations] = useState<any[]>([]);
+  const [valuationHistoryLoading, setValuationHistoryLoading] = useState(true);
   const [valuation, setValuation] = useState<any>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -71,7 +73,14 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     return body;
   };
 
-  const loadList = async () => setValuations((await api("/api/valuations")).valuations || []);
+  const loadList = async () => {
+    setValuationHistoryLoading(true);
+    try {
+      setValuations((await api("/api/valuations")).valuations || []);
+    } finally {
+      setValuationHistoryLoading(false);
+    }
+  };
 
   const open = async (id: string) => {
     setBusy(true);
@@ -80,9 +89,10 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
       setValuation(loadedValuation);
       setCustomInstructions(loadedValuation.custom_instructions || "");
       const editableData = loadedValuation.approved_data || loadedValuation.extraction_data;
-      setReviewData(editableData && Object.keys(editableData).length ? structuredClone(editableData) : null);
+      setReviewData(editableData && Object.keys(editableData).length ? normalizeExtractionResult(editableData) : null);
     } catch (error: any) {
       setMessage(error.message);
+      setValuationHistoryLoading(false);
     } finally {
       setBusy(false);
     }
@@ -505,11 +515,22 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
               <a className="button primary button-link" href="/?new=1" target="_blank" rel="noopener noreferrer">+ Start new valuation</a>
             </header>
             {message && <p className="notice">{message}</p>}
-            <div className="panel">
-              <h2>Valuation history</h2>
-              <table>
+            <div className="panel valuation-history-panel">
+              <div className="valuation-history-heading">
+                <h2>Valuation history</h2>
+                {valuationHistoryLoading && <span role="status" aria-live="polite">Loading records…</span>}
+              </div>
+              <table aria-busy={valuationHistoryLoading}>
                 <thead><tr><th>Reference</th><th>Valuation Name</th><th>Valuation start date</th><th>Valuation start time</th><th>Status</th><th>Report</th></tr></thead>
-                <tbody>{valuations.map((item) => <tr key={item.id}><td><a className="valuation-reference" href={`/?valuation=${item.id}`} target="_blank" rel="noopener noreferrer">{item.reference_no}</a></td><td>{item.property_label || "Unnamed valuation"}</td><td>{formatStartDate(item.created_at)}</td><td>{formatStartTime(item.created_at)}</td><td>{item.status.replaceAll("_", " ")}</td><td>{item.reports?.length ? <a className="valuation-reference" href={`/api/valuations/${item.id}/report`}>Download .docx</a> : "Not available"}</td></tr>)}</tbody>
+                <tbody>
+                  {valuationHistoryLoading
+                    ? Array.from({ length: 4 }, (_, row) => (
+                        <tr className="valuation-history-skeleton" key={`valuation-history-skeleton-${row}`} aria-hidden="true">
+                          {Array.from({ length: 6 }, (_, column) => <td key={column}><span /></td>)}
+                        </tr>
+                      ))
+                    : valuations.map((item) => <tr key={item.id}><td><a className="valuation-reference" href={`/?valuation=${item.id}`} target="_blank" rel="noopener noreferrer">{item.reference_no}</a></td><td>{item.property_label || "Unnamed valuation"}</td><td>{formatStartDate(item.created_at)}</td><td>{formatStartTime(item.created_at)}</td><td>{item.status.replaceAll("_", " ")}</td><td>{item.reports?.length ? <a className="valuation-reference" href={`/api/valuations/${item.id}/report`}>Download .docx</a> : "Not available"}</td></tr>)}
+                </tbody>
               </table>
             </div>
           </>
@@ -652,91 +673,58 @@ function ExtractionProgressPanel({ progress, onRefresh }: { progress: Extraction
 }
 
 function ExtractedDataReview({ data, onChange, onProceed, onDiscard, busy }: { data: any; onChange: (data: any) => void; onProceed: () => void; onDiscard: () => void; busy: boolean }) {
-  const setPath = (path: Array<string | number>, value: unknown) => {
+  const extractionResult = data.extraction_result;
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(EXTRACTION_GROUPS.slice(0, 2).map((group) => group.key)));
+  const updateFieldValue = (groupKey: string, fieldKey: string, value: unknown) => {
     const next = structuredClone(data);
-    let target = next;
-    for (let index = 0; index < path.length - 1; index += 1) target = target[path[index]];
-    target[path[path.length - 1]] = value;
+    const field = next.extraction_result[groupKey][fieldKey];
+    if (field.source_document !== "User-reviewed input" && field.value !== null && field.value !== undefined && field.value !== "") {
+      field.alternative_values = [...(field.alternative_values || []), {
+        value: field.value,
+        source_document: field.source_document,
+        source_page_or_section: field.source_page_or_section,
+        confidence: field.confidence,
+        remarks: field.remarks,
+      }];
+    }
+    field.value = value === "" ? null : value;
+    field.source_document = "User-reviewed input";
+    field.source_page_or_section = null;
+    field.confidence = null;
+    field.remarks = "Value reviewed or amended by the user before valuation.";
     onChange(next);
   };
-  const numberValue = (value: string) => value.trim() === "" ? null : Number(value);
-  const deeds = data.deeds || [];
-  const landClasses = data.landClasses || [];
-  const contradictions = data.contradictions || [];
-  const comments = data.comments || [];
+  const warnings = extractionResult.validation_warnings || [];
+  const missingRequiredFields = extractionResult.missing_required_fields || [];
 
   return (
     <section className="review-layout extracted-review">
       <div className="panel review-form-panel">
-        <div className="panel-heading"><div><p className="eyebrow">HUMAN REVIEW</p><h2>Review extracted data</h2><p>Confirm or correct the factual information below. Your approved values will be used by the Valuation Engine and Word report.</p></div><span className="badge warn">Editable fields</span></div>
+        <div className="panel-heading"><div><p className="eyebrow">HUMAN REVIEW</p><h2>Review extracted data</h2><p>Every field in the minimum extraction map is shown below. Blank fields mean the information was not found and may be completed manually before valuation.</p></div><span className="badge warn">Editable values</span></div>
 
-        <div className="review-section">
-          <h3>Ownership and land identifiers</h3>
-          <div className="form-grid">
-            <ReviewField label="Owner name(s)" value={(data.ownerNames || []).join(", ")} onChange={(value) => setPath(["ownerNames"], value.split(",").map((item) => item.trim()).filter(Boolean))} hint="Separate multiple names with commas." />
-            <ReviewField label="Khatiyan number" value={data.khatiyanNumber ?? ""} onChange={(value) => setPath(["khatiyanNumber"], value || null)} />
-            <ReviewField label="RS Hal number" value={data.rsHal?.raw ?? ""} onChange={(value) => setPath(["rsHal", "raw"], value || null)} />
-            <ReviewField label="RS Hal mother number" value={data.rsHal?.mother ?? ""} onChange={(value) => setPath(["rsHal", "mother"], value || null)} />
-            <ReviewField label="RS Hal bata number" value={data.rsHal?.bata ?? ""} onChange={(value) => setPath(["rsHal", "bata"], value || null)} />
-            <ReviewField label="CS Hal / Sebek Dag number" value={data.csHalNumber ?? ""} onChange={(value) => setPath(["csHalNumber"], value || null)} />
-          </div>
-        </div>
-
-        <div className="review-section">
-          <h3>Property location</h3>
-          <div className="form-grid">
-            {([['district', 'District'], ['subdivision', 'Subdivision'], ['revenueCircle', 'Revenue circle'], ['tehsil', 'Tehsil'], ['mouja', 'Mouja']] as const).map(([key, label]) => <ReviewField key={key} label={label} value={data.locality?.[key] ?? ""} onChange={(value) => setPath(["locality", key], value || null)} />)}
-          </div>
-        </div>
-
-        <div className="review-section">
-          <div className="review-section-heading"><h3>Sale deed details</h3><button type="button" className="text-button" onClick={() => setPath(["deeds"], [...deeds, { number: null, date: null, amount: null, type: null, adjoiningOwners: [] }])}>+ Add deed</button></div>
-          {deeds.length ? deeds.map((deed: any, index: number) => <div className="repeatable-card" key={index}>
-            <div className="repeatable-title"><strong>Deed {index + 1}</strong><button type="button" className="remove-row" onClick={() => setPath(["deeds"], deeds.filter((_: any, itemIndex: number) => itemIndex !== index))}>Remove</button></div>
-            <div className="form-grid">
-              <ReviewField label="Deed number" value={deed.number ?? ""} onChange={(value) => setPath(["deeds", index, "number"], value || null)} />
-              <ReviewField label="Deed date" value={deed.date ?? ""} onChange={(value) => setPath(["deeds", index, "date"], value || null)} />
-              <ReviewField label="Book value / deed amount" type="number" value={deed.amount ?? ""} onChange={(value) => setPath(["deeds", index, "amount"], numberValue(value))} />
-              <ReviewField label="Deed type" value={deed.type ?? ""} onChange={(value) => setPath(["deeds", index, "type"], value || null)} />
-              <ReviewField className="full-field" label="Adjoining owners and sides" value={(deed.adjoiningOwners || []).join(", ")} onChange={(value) => setPath(["deeds", index, "adjoiningOwners"], value.split(",").map((item) => item.trim()).filter(Boolean))} hint="Use entries such as North: owner name, South: road." />
-            </div>
-          </div>) : <p className="empty-review">No deed details were extracted. Add a deed record if the information is available.</p>}
-        </div>
-
-        <div className="review-section">
-          <div className="review-section-heading"><h3>Land classes and areas</h3><button type="button" className="text-button" onClick={() => setPath(["landClasses"], [...landClasses, { name: "", areaSqFt: null, sourceUnit: null, sourceValue: null, considered: false }])}>+ Add land class</button></div>
-          {landClasses.length ? landClasses.map((land: any, index: number) => <div className="repeatable-card land-class-card" key={index}>
-            <div className="form-grid">
-              <ReviewField label="Land class" value={land.name ?? ""} onChange={(value) => setPath(["landClasses", index, "name"], value)} />
-              <ReviewField label="Area in square feet" type="number" value={land.areaSqFt ?? ""} onChange={(value) => setPath(["landClasses", index, "areaSqFt"], numberValue(value))} />
-              <ReviewField label="Source area value" value={land.sourceValue ?? ""} onChange={(value) => setPath(["landClasses", index, "sourceValue"], value || null)} />
-              <ReviewField label="Source unit" value={land.sourceUnit ?? ""} onChange={(value) => setPath(["landClasses", index, "sourceUnit"], value || null)} />
-            </div>
-            <div className="land-class-actions"><label><input type="checkbox" checked={Boolean(land.considered)} onChange={(event) => setPath(["landClasses", index, "considered"], event.target.checked)} /> Consider this class for valuation</label><button type="button" className="remove-row" onClick={() => setPath(["landClasses"], landClasses.filter((_: any, itemIndex: number) => itemIndex !== index))}>Remove</button></div>
-          </div>) : <p className="empty-review">No land classes were extracted. Add available land-area information before proceeding.</p>}
-        </div>
-
-        <div className="review-section">
-          <h3>Approach road and building</h3>
-          <div className="form-grid">
-            <ReviewField label="Approach-road side" value={data.approachRoad?.side ?? ""} onChange={(value) => setPath(["approachRoad", "side"], value || null)} />
-            <ReviewField label="Approach-road direction" value={data.approachRoad?.direction ?? ""} onChange={(value) => setPath(["approachRoad", "direction"], value || null)} />
-            <label className="review-field"><span>Road attached to valued property</span><select value={data.approachRoad?.attached === null || data.approachRoad?.attached === undefined ? "" : String(data.approachRoad.attached)} onChange={(event) => setPath(["approachRoad", "attached"], event.target.value === "" ? null : event.target.value === "true")}><option value="">Not available</option><option value="true">Yes</option><option value="false">No</option></select></label>
-            <ReviewField label="Building type" value={data.building?.type ?? ""} onChange={(value) => setPath(["building", "type"], value || null)} />
-            <ReviewField label="Building plinth area (sq ft)" type="number" value={data.building?.plinthAreaSqFt ?? ""} onChange={(value) => setPath(["building", "plinthAreaSqFt"], numberValue(value))} />
-            <ReviewField label="Building age (years)" type="number" value={data.building?.ageYears ?? ""} onChange={(value) => setPath(["building", "ageYears"], numberValue(value))} />
-            <label className="review-field"><span>Approved building plan available</span><select value={data.building?.approvedPlanAvailable === null || data.building?.approvedPlanAvailable === undefined ? "" : String(data.building.approvedPlanAvailable)} onChange={(event) => setPath(["building", "approvedPlanAvailable"], event.target.value === "" ? null : event.target.value === "true")}><option value="">Not available</option><option value="true">Yes</option><option value="false">No</option></select></label>
-          </div>
-        </div>
-
-        <div className="review-section">
-          <h3>Sale agreement</h3>
-          <div className="form-grid">
-            <ReviewField label="Agreement serial number" value={data.agreement?.serialNumber ?? ""} onChange={(value) => setPath(["agreement", "serialNumber"], value || null)} />
-            <ReviewField label="Agreement date" value={data.agreement?.date ?? ""} onChange={(value) => setPath(["agreement", "date"], value || null)} />
-            <ReviewField label="E-stamp number" value={data.agreement?.eStampNumber ?? ""} onChange={(value) => setPath(["agreement", "eStampNumber"], value || null)} />
-            <ReviewField label="Buyer name" value={data.agreement?.buyerName ?? ""} onChange={(value) => setPath(["agreement", "buyerName"], value || null)} />
-          </div>
+        <div className="extraction-contract-groups">
+          {EXTRACTION_GROUPS.map((group) => {
+            const populated = group.fields.filter((field) => extractionResult[group.key][field.key].value !== null && extractionResult[group.key][field.key].value !== "").length;
+            return <details className="extraction-contract-group" open={openGroups.has(group.key)} onToggle={(event) => {
+              const isOpen = event.currentTarget.open;
+              setOpenGroups((current) => {
+                if (current.has(group.key) === isOpen) return current;
+                const next = new Set(current);
+                if (isOpen) next.add(group.key); else next.delete(group.key);
+                return next;
+              });
+            }} key={group.key}>
+              <summary><span><strong>{group.label}</strong><small>{group.description}</small></span><b>{populated}/{group.fields.length} found</b></summary>
+              <div className="form-grid extraction-contract-fields">
+                {group.fields.map((field) => <ReviewContractField
+                  key={field.key}
+                  definition={field}
+                  field={extractionResult[group.key][field.key]}
+                  onChange={(value) => updateFieldValue(group.key, field.key, value)}
+                />)}
+              </div>
+            </details>;
+          })}
         </div>
 
         <div className="review-actions"><button className="button danger" disabled={busy} onClick={onDiscard}>Discard Extraction and Reupload Documents</button><button className="button primary" disabled={busy} onClick={onProceed}>Proceed with valuation</button></div>
@@ -744,15 +732,34 @@ function ExtractedDataReview({ data, onChange, onProceed, onDiscard, busy }: { d
 
       <aside className="panel ai-feedback-panel">
         <p className="eyebrow">AI FEEDBACK</p><h2>Review notes</h2><p className="muted">These observations are retained as generated and cannot be edited.</p>
-        <FeedbackGroup title="Comments" items={comments.map((item: string) => item)} empty="No additional comments." />
-        <FeedbackGroup title="Contradictions" items={contradictions.map((item: any) => item.description)} empty="No contradictions identified." tone="contradiction" />
+        <FeedbackGroup title="Missing report-critical fields" items={missingRequiredFields} empty="No report-critical fields were identified as missing." />
+        <FeedbackGroup title="Validation warnings and contradictions" items={warnings.map((item: any) => `${item.field}: ${item.description}`)} empty="No contradictions identified." tone="contradiction" />
       </aside>
     </section>
   );
 }
 
-function ReviewField({ label, value, onChange, type = "text", hint, className = "" }: { label: string; value: string | number; onChange: (value: string) => void; type?: "text" | "number"; hint?: string; className?: string }) {
-  return <label className={`review-field ${className}`}><span>{label}</span><input type={type} min={type === "number" ? 0 : undefined} step={type === "number" ? "any" : undefined} value={value} onChange={(event) => onChange(event.target.value)} />{hint && <small>{hint}</small>}</label>;
+function ReviewContractField({ definition, field, onChange }: { definition: { label: string; kind?: ExtractionFieldKind; hint?: string }; field: any; onChange: (value: unknown) => void }) {
+  const kind = definition.kind || "text";
+  const provenance = [field.source_document, field.source_page_or_section].filter(Boolean).join(" - ");
+  return <label className={`review-field extraction-contract-field${kind === "long_text" ? " full-field" : ""}`}>
+    <span>{definition.label}</span>
+    {kind === "boolean" ? (
+      <select value={field.value === null || field.value === undefined ? "" : String(field.value)} onChange={(event) => onChange(event.target.value === "" ? null : event.target.value === "true")}>
+        <option value="">Not found / not available</option><option value="true">Yes</option><option value="false">No</option>
+      </select>
+    ) : kind === "long_text" ? (
+      <textarea value={field.value ?? ""} onChange={(event) => onChange(event.target.value)} />
+    ) : (
+      <input type={kind === "number" ? "number" : "text"} step={kind === "number" ? "any" : undefined} value={field.value ?? ""} onChange={(event) => onChange(event.target.value)} />
+    )}
+    {definition.hint && <small>{definition.hint}</small>}
+    <span className="field-provenance">
+      {provenance ? <>Source: {provenance}{field.confidence && <> | Confidence: {String(field.confidence).toLowerCase()}</>}</> : "No source identified"}
+      {field.remarks && <em>{field.remarks}</em>}
+      {field.alternative_values?.length > 0 && <em>{field.alternative_values.length} alternative source value{field.alternative_values.length === 1 ? "" : "s"} retained for review.</em>}
+    </span>
+  </label>;
 }
 
 function FeedbackGroup({ title, items, empty, tone = "" }: { title: string; items: string[]; empty: string; tone?: string }) {

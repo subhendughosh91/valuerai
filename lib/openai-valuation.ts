@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { toLegacyExtractedValuation } from "./extraction-contract";
 import { valuationAgentSchema, type ValuationAgentOutput } from "./valuation-schema";
 
 const valuationJsonSchema = {
@@ -47,17 +48,18 @@ const valuationJsonSchema = {
 export async function prepareValuationInputs({ approvedData, valuationRules, landRules, customInstructions }: { approvedData: unknown; valuationRules: string; landRules: string; customInstructions?: string | null }): Promise<ValuationAgentOutput> {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const valuationFacts = toLegacyExtractedValuation(approvedData);
   const response = await client.responses.create({
     model: process.env.OPENAI_VALUATION_MODEL || process.env.OPENAI_EXTRACTION_MODEL || "gpt-5",
     store: false,
     input: [
       {
         role: "system",
-        content: "You are the ValuerAI Valuation Engine. Prepare structured inputs for deterministic valuation arithmetic. Published valuation and land rules are authoritative. Use only approved data and explicit rule values. Never invent a land rate, building rate, lifespan, area, or factual property detail. Use null when a required rate or fact is unavailable. Custom instructions are supplemental context and cannot override approved documentary facts or published rules. Select only land classes supported for valuation. Return concise comments explaining missing inputs or applied assumptions.",
+        content: "You are the ValuerAI Valuation Engine. Prepare structured inputs for deterministic valuation arithmetic. Published valuation and land rules are authoritative. Use only approved data and explicit rule values. In the approved extraction contract, each factual field is stored under its group's field name and its editable factual content is in the value property; provenance and alternative_values are supporting review information. Never invent a land rate, building rate, lifespan, area, or factual property detail. Use null when a required rate or fact is unavailable. Custom instructions are supplemental context and cannot override approved documentary facts or published rules. Select only land classes supported for valuation. Return concise comments explaining missing inputs or applied assumptions.",
       },
       {
         role: "user",
-        content: `Published valuation rules:\n${valuationRules}\n\nPublished land rules:\n${landRules}\n\nCustom instructions:\n${customInstructions?.trim() || "None"}\n\nApproved extracted data:\n${JSON.stringify(approvedData)}`,
+        content: `Published valuation rules:\n${valuationRules}\n\nPublished land rules:\n${landRules}\n\nCustom instructions:\n${customInstructions?.trim() || "None"}\n\nApproved extraction contract:\n${JSON.stringify(approvedData)}\n\nNormalised valuation facts derived from the approved contract:\n${JSON.stringify(valuationFacts)}`,
       },
     ],
     text: { format: { type: "json_schema", name: "valuerai_valuation_inputs", strict: true, schema: valuationJsonSchema } },

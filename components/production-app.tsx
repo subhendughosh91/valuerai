@@ -21,23 +21,18 @@ export function ProductionApp() {
   const [loading, setLoading] = useState(true);
   const supabase = createSupabaseBrowserClient();
 
-  async function load(): Promise<Profile | null> {
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
+  async function loadProfile(userId: string): Promise<Profile | null> {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("display_name,role,state_code")
+      .eq("id", userId)
+      .single();
 
-    if (error || !user) {
-      setProfile(null);
+    if (error || !data) {
+      setMessage("Your account profile could not be loaded. Please refresh the page and try again.");
       setLoading(false);
       return null;
     }
-
-    const { data } = await supabase
-      .from("profiles")
-      .select("display_name,role,state_code")
-      .eq("id", user.id)
-      .single();
 
     const loadedProfile = data as Profile | null;
     setProfile(loadedProfile);
@@ -46,11 +41,27 @@ export function ProductionApp() {
   }
 
   useEffect(() => {
-    void load();
+    let active = true;
+
+    async function restoreSession() {
+      const { data, error } = await supabase.auth.getSession();
+      if (!active) return;
+      if (error || !data.session) {
+        setProfile(null);
+        setLoading(false);
+        return;
+      }
+      await loadProfile(data.session.user.id);
+    }
+
+    void restoreSession();
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, session: Session | null) => {
+    } = supabase.auth.onAuthStateChange((event: AuthChangeEvent, session: Session | null) => {
+      // getSession() above owns the initial restoration. Handling INITIAL_SESSION
+      // here as well would start two competing session/profile requests.
+      if (event === "INITIAL_SESSION") return;
       if (!session) {
         setProfile(null);
         setLoading(false);
@@ -59,21 +70,24 @@ export function ProductionApp() {
 
       // Defer Supabase calls until the auth-state callback has released its
       // internal lock. Calling another auth method inline can stall updates.
-      window.setTimeout(() => void load(), 0);
+      window.setTimeout(() => void loadProfile(session.user.id), 0);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
   }, [supabase]);
 
   async function signIn(event: FormEvent) {
     event.preventDefault();
     setMessage("");
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) {
       setMessage(error.message);
       return;
     }
-    const signedInProfile = await load();
+    const signedInProfile = data.user ? await loadProfile(data.user.id) : null;
     if (!signedInProfile || signedInProfile.role !== loginRole) {
       await supabase.auth.signOut();
       setProfile(null);

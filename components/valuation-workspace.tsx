@@ -67,15 +67,17 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   );
 
   const api = async (url: string, init?: RequestInit) => {
-    let response = await fetch(url, init);
+    const request = { ...init, cache: "no-store" as RequestCache };
+    let response = await fetch(url, request);
     if (response.status === 401) {
-      const { data, error } = await supabase.auth.refreshSession();
-      if (!error && data.session) response = await fetch(url, init);
+      // Allow the browser client to finish any in-flight automatic refresh,
+      // then retry once with the updated cookie. A failed history request must
+      // never destroy an otherwise recoverable login session.
+      const { data, error } = await supabase.auth.getSession();
+      if (!error && data.session) response = await fetch(url, request);
     }
     if (response.status === 401) {
-      await supabase.auth.signOut({ scope: "local" });
-      window.location.assign("/");
-      throw Error("Your session has expired. Please sign in again.");
+      throw Error("Your session could not be verified. Refresh the page and try again. You have not been signed out.");
     }
     const rawBody = await response.text();
     let body: any = {};
@@ -95,9 +97,19 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
 
   const loadList = async () => {
     setValuationHistoryLoading(true);
+    setMessage("");
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
     try {
-      setValuations((await api("/api/valuations")).valuations || []);
+      setValuations((await api("/api/valuations", { signal: controller.signal })).valuations || []);
+    } catch (error: any) {
+      if (error?.name === "AbortError") {
+        setMessage("Valuation history is taking longer than expected. Please refresh the page and try again.");
+        return;
+      }
+      throw error;
     } finally {
+      window.clearTimeout(timeout);
       setValuationHistoryLoading(false);
     }
   };

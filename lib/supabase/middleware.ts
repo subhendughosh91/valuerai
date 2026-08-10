@@ -19,8 +19,9 @@ export async function updateSupabaseSession(request: NextRequest) {
     },
   );
 
-  // This validates the current access token and refreshes it when necessary.
-  // Do not remove this call: cookie updates are produced while it executes.
-  await supabase.auth.getUser();
+  // Validate the JWT locally when possible and refresh its cookies when needed.
+  // Unlike getUser(), this does not add a remote Auth lookup to every request.
+  await supabase.auth.getClaims();
+  response.headers.set("Cache-Control", "private, no-store");
   return response;
 }

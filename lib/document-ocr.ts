@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { getDocumentModel } from "./openai-models";
 
 type DocumentForOcr = {
   bytes: Buffer;
@@ -24,7 +25,7 @@ export async function extractDocumentText({ bytes, filename, mimeType }: Documen
       };
 
   const response = await client.responses.create({
-    model: process.env.OPENAI_OCR_MODEL || process.env.OPENAI_EXTRACTION_MODEL || "gpt-5",
+    model: getDocumentModel(),
     store: false,
     input: [{
       role: "user",

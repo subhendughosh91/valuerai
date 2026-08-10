@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { extractionJsonSchema, extractionSchema, normalizeExtractionResult, type MinimumExtractionResult } from "./extraction-contract";
+import { getExtractionModel } from "./openai-models";
 
 export async function extractTripuraValuation({ rules, documents, customInstructions }: {
   rules: string;
@@ -12,7 +13,7 @@ export async function extractTripuraValuation({ rules, documents, customInstruct
     ? `User-provided custom instructions:\n${customInstructions.trim()}`
     : "User-provided custom instructions: None.";
   const response = await client.responses.create({
-    model: process.env.OPENAI_EXTRACTION_MODEL || "gpt-5",
+    model: getExtractionModel(),
     store: false,
     input: [
       {

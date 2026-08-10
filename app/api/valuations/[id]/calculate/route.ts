@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { calculateTripuraValuation } from "../../../../../lib/calculations";
 import { AI_CREDITS_EXHAUSTED_MESSAGE, isAiCreditsExhausted } from "../../../../../lib/openai-errors";
+import { getValuationModel } from "../../../../../lib/openai-models";
 import { prepareValuationInputs } from "../../../../../lib/openai-valuation";
 import { requireProfile } from "../../../../../lib/auth";
 
@@ -46,6 +47,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
         customInstructions: valuation.custom_instructions,
         valuationRuleId: valuation.valuation_rule_id,
         landRuleId: valuation.land_rule_id,
+        model: getValuationModel(),
       },
       output,
     }).select().single();
@@ -53,7 +55,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     stage = "COMPLETION_SAVE";
     const { error: completionError } = await context.supabase.from("valuations").update({ status: "COMPLETE", processing_error: null }).eq("id", id);
     if (completionError) throw new Error(completionError.message);
-    await context.supabase.from("audit_events").insert({ actor_id: context.profile.id, valuation_id: id, event_type: "VALUATION_CALCULATED", payload: { calculationId: data.id, customInstructionsProvided: Boolean(valuation.custom_instructions) } });
+    await context.supabase.from("audit_events").insert({ actor_id: context.profile.id, valuation_id: id, event_type: "VALUATION_CALCULATED", payload: { calculationId: data.id, model: getValuationModel(), customInstructionsProvided: Boolean(valuation.custom_instructions) } });
     return NextResponse.json({ calculation: data });
   } catch (error) {
     const diagnostic = error instanceof Error ? error.message : "Unknown valuation error";

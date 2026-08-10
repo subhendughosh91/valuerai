@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { toLegacyExtractedValuation } from "./extraction-contract";
+import { getValuationModel } from "./openai-models";
 import { valuationAgentSchema, type ValuationAgentOutput } from "./valuation-schema";
 
 const valuationJsonSchema = {
@@ -50,7 +51,7 @@ export async function prepareValuationInputs({ approvedData, valuationRules, lan
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const valuationFacts = toLegacyExtractedValuation(approvedData);
   const response = await client.responses.create({
-    model: process.env.OPENAI_VALUATION_MODEL || process.env.OPENAI_EXTRACTION_MODEL || "gpt-5",
+    model: getValuationModel(),
     store: false,
     input: [
       {

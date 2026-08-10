@@ -342,7 +342,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   const formatStartTime = (value: string) => new Date(value).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell${valuation ? " valuation-page-shell" : ""}`}>
       <aside className="side-nav">
         <a className="logo" href="/"><span className="logo-mark">V</span><span>Valuer<span>AI</span></span></a>
         <p className="jurisdiction"><b>{stateName}</b></p>

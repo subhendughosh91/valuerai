@@ -568,10 +568,24 @@ export async function cancelBackgroundExtraction(valuationId: string) {
     .eq("valuation_id", valuationId).in("status", ["QUEUED", "SUBMITTING", "IN_PROGRESS", "PROCESSING"]);
 }
 
-export async function getBackgroundExtractionStatus(valuationId: string) {
+export async function getBackgroundExtractionStatus(valuationId: string, expectedRunId?: string | null) {
   const admin = createSupabaseAdminClient();
-  const { data: run } = await admin.from("extraction_runs").select("id,status,model,error,started_at,completed_at")
-    .eq("valuation_id", valuationId).order("started_at", { ascending: false }).limit(1).maybeSingle();
+  const runColumns = "id,status,model,error,started_at,completed_at";
+  let run = null;
+  if (expectedRunId) {
+    const result = await admin.from("extraction_runs").select(runColumns)
+      .eq("valuation_id", valuationId).eq("id", expectedRunId).maybeSingle();
+    run = result.data;
+  } else {
+    const activeResult = await admin.from("extraction_runs").select(runColumns)
+      .eq("valuation_id", valuationId).eq("status", "RUNNING").order("started_at", { ascending: false }).limit(1).maybeSingle();
+    run = activeResult.data;
+    if (!run) {
+      const latestResult = await admin.from("extraction_runs").select(runColumns)
+        .eq("valuation_id", valuationId).order("started_at", { ascending: false }).limit(1).maybeSingle();
+      run = latestResult.data;
+    }
+  }
   if (!run) return null;
   const { data: steps } = await admin.from("ai_processing_steps").select("stage,status,model,error,attempt,document_id,created_at,updated_at")
     .eq("extraction_run_id", run.id).order("created_at", { ascending: true });

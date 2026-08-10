@@ -5,14 +5,15 @@ import { isBackgroundExtractionEnabled } from "../../../../../lib/openai-models"
 
 export const maxDuration = 120;
 
-export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const context = await requireProfile();
   if (context instanceof NextResponse) return context;
   const { id } = await params;
   const { data: valuation } = await context.supabase.from("valuations").select("id,status,processing_error").eq("id", id).single();
   if (!valuation) return NextResponse.json({ error: "Valuation not found." }, { status: 404 });
 
-  const status = await getBackgroundExtractionStatus(id);
+  const expectedRunId = new URL(request.url).searchParams.get("runId");
+  const status = await getBackgroundExtractionStatus(id, expectedRunId);
   if (isBackgroundExtractionEnabled() && status?.runStatus === "RUNNING") {
     after(async () => {
       try {

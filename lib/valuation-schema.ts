@@ -3,7 +3,7 @@ import { z } from "zod";
 export { extractionSchema } from "./extraction-contract";
 export type { MinimumExtractionResult as ExtractedValuation } from "./extraction-contract";
 
-export const documentKinds = ["SALE_DEED", "KHATIYAN", "BUILDING_PLAN", "SALE_AGREEMENT", "RS_HAL_DAG_MAP", "GOVT_GUIDELINE_RATE", "ELECTRICITY_BILL", "MUNICIPAL_TAX", "KYC", "OTHER"] as const;
+export const documentKinds = ["SALE_DEED", "KHATIYAN", "BUILDING_PLAN", "SALE_AGREEMENT", "RS_HAL_DAG_MAP", "GOVT_GUIDELINE_RATE", "ELECTRICITY_BILL", "MUNICIPAL_TAX", "KYC", "SITE_INSPECTION_REPORT", "OTHER"] as const;
 
 export const valuationInputSchema = z.object({
   consideredLandClasses: z.array(z.object({ name: z.string(), areaSqFt: z.number().nonnegative(), ratePerSqFt: z.number().nonnegative().nullable() })),

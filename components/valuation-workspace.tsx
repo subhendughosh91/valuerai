@@ -15,6 +15,7 @@ const documents = [
   ["ELECTRICITY_BILL", "Electricity bill"],
   ["MUNICIPAL_TAX", "Municipal tax document"],
   ["KYC", "KYC document"],
+  ["SITE_INSPECTION_REPORT", "Site inspection report"],
   ["OTHER", "Other documents"],
 ] as const;
 
@@ -33,6 +34,31 @@ const uploadStageLabel: Record<UploadStage, string> = {
   FAILED: "Upload or document processing failed",
 };
 
+function supportedMimeType(file: File) {
+  const accepted = new Set([
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+  ]);
+  if (accepted.has(file.type)) return file.type;
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  const byExtension: Record<string, string> = {
+    pdf: "application/pdf",
+    doc: "application/msword",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    webp: "image/webp",
+  };
+  const inferred = extension ? byExtension[extension] : undefined;
+  if (!inferred) throw Error(`${file.name} is not a supported PDF, Word, or image file.`);
+  return inferred;
+}
+
 export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSignOut: () => void }) {
   const supabase = createSupabaseBrowserClient();
   const [valuations, setValuations] = useState<any[]>([]);
@@ -43,6 +69,9 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   const [otherDocumentTypes, setOtherDocumentTypes] = useState("");
   const [uploadStatus, setUploadStatus] = useState<Record<string, UploadEntry[]>>({});
   const [extracting, setExtracting] = useState(false);
+  const [backgroundExtractionSubmitted, setBackgroundExtractionSubmitted] = useState(false);
+  const [activeExtractionRunId, setActiveExtractionRunId] = useState<string | null>(null);
+  const [extractionError, setExtractionError] = useState("");
   const [newValuationMode, setNewValuationMode] = useState(false);
   const [newValuationName, setNewValuationName] = useState("");
   const [customInstructions, setCustomInstructions] = useState("");
@@ -121,7 +150,14 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     try {
       const loadedValuation = (await api(`/api/valuations/${id}`)).valuation;
       setValuation(loadedValuation);
-      setExtracting(loadedValuation.status === "EXTRACTING");
+      const extractionIsRunning = loadedValuation.status === "EXTRACTING";
+      setExtracting(extractionIsRunning);
+      setBackgroundExtractionSubmitted(extractionIsRunning);
+      if (!extractionIsRunning) {
+        setActiveExtractionRunId(null);
+        setBackgroundExtractionSubmitted(false);
+        setExtractionError("");
+      }
       setCustomInstructions(loadedValuation.custom_instructions || "");
       const editableData = loadedValuation.approved_data || loadedValuation.extraction_data;
       setReviewData(editableData && Object.keys(editableData).length ? normalizeExtractionResult(editableData) : null);
@@ -142,7 +178,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   }, []);
 
   useEffect(() => {
-    if ((!extracting && valuation?.status !== "EXTRACTING") || !valuation?.id) return;
+    if ((!backgroundExtractionSubmitted && !activeExtractionRunId) || !valuation?.id) return;
     let stopped = false;
     let polling = false;
 
@@ -150,12 +186,16 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
       if (polling || document.visibilityState !== "visible") return;
       polling = true;
       try {
-        const current = (await api(`/api/valuations/${valuation.id}/extraction-status`)).extraction;
+        const runQuery = activeExtractionRunId ? `?runId=${encodeURIComponent(activeExtractionRunId)}` : "";
+        const current = (await api(`/api/valuations/${valuation.id}/extraction-status${runQuery}`)).extraction;
         if (stopped) return;
+        if (current.runId) setBackgroundExtractionSubmitted(true);
+        if (current.runId && !activeExtractionRunId) setActiveExtractionRunId(current.runId);
         const total = current.documentCount || valuation.valuation_documents?.length || 0;
         const completed = current.completedDocuments || 0;
 
         if (current.phase === "COMPLETE") {
+          setExtractionError("");
           setExtractionProgress({ phase: "REVIEW", title: "Extraction complete", detail: "Opening the extracted-data review screen.", completed: total, total, percent: 100 });
           setBusy(false);
           extractionInFlight.current = false;
@@ -165,11 +205,14 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
             setMessage("Extraction complete. Review the extracted data and confirm when ready.");
           }
         } else if (current.phase === "FAILED") {
+          const failureMessage = current.error || "Extraction failed. Your uploaded documents have been retained; select Start Valuation to retry.";
           setBusy(false);
           extractionInFlight.current = false;
-          await open(valuation.id);
-          setMessage(current.error || "Extraction failed. Your uploaded documents have been retained; select Start Valuation to retry.");
+          setExtractionError(failureMessage);
+          setExtractionProgress((progress) => ({ ...progress, title: "Extraction could not be completed", detail: failureMessage }));
+          setMessage(failureMessage);
         } else if (current.phase === "DOCUMENT_READING") {
+          setExtractionError("");
           setExtractionProgress({
             phase: "OCR",
             title: "Document text extraction in progress",
@@ -179,10 +222,13 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
             percent: Math.min(76, 15 + Math.round((completed / Math.max(total, 1)) * 60)),
           });
         } else if (current.phase === "STRUCTURED_EXTRACTION") {
+          setExtractionError("");
           setExtractionProgress({ phase: "AI", title: "AI extraction in progress", detail: `Analysing the combined document text and applying the published state rules${current.model ? ` with ${current.model}` : ""}.`, completed, total, percent: 84 });
         } else if (current.phase === "POST_PROCESSING") {
+          setExtractionError("");
           setExtractionProgress({ phase: "AI", title: "Validating extracted information", detail: "Normalising the extracted fields and checking document consistency.", completed, total, percent: 93 });
         } else {
+          setExtractionError("");
           setExtractionProgress({ phase: "PREPARING", title: "Preparing uploaded documents", detail: "Validating the secure files before document text extraction begins.", completed, total, percent: 10 });
         }
       } catch {
@@ -203,7 +249,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, [extracting, valuation?.id, valuation?.status]);
+  }, [activeExtractionRunId, backgroundExtractionSubmitted, valuation?.id]);
 
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -244,11 +290,6 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     const input = event.currentTarget;
     const files = [...(input.files || [])];
     if (!files.length) return;
-    if (kind === "OTHER" && !otherDocumentTypes.trim()) {
-      setMessage("Enter the comma-separated document type or name inside the Other documents section before selecting files.");
-      input.value = "";
-      return;
-    }
 
     const entries = files.map((file, index) => ({
       id: `${file.name}-${file.size}-${file.lastModified}-${index}-${Date.now()}`,
@@ -265,26 +306,25 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
       const entry = entries[index];
       try {
         updateUploadEntry(kind, entry.id, { stage: "UPLOADING" });
-        const types = kind === "OTHER"
-          ? otherDocumentTypes.split(",").map((value) => value.trim()).filter(Boolean)
-          : [];
+        const suppliedTypes = otherDocumentTypes.split(",").map((value) => value.trim()).filter(Boolean);
+        const fallbackType = file.name.replace(/\.[^.]+$/, "").trim() || "Supporting document";
+        const types = kind === "OTHER" ? [suppliedTypes[index] || suppliedTypes[0] || fallbackType] : [];
+        const mimeType = supportedMimeType(file);
         const signed = await api(`/api/valuations/${valuation.id}/documents/sign`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             kind,
             filename: file.name,
-            mimeType: file.type,
+            mimeType,
             byteSize: file.size,
             otherDocumentTypes: types,
           }),
         });
-        const uploaded = await fetch(signed.signedUrl, {
-          method: "PUT",
-          headers: { "Content-Type": file.type, "x-upsert": "false" },
-          body: file,
-        });
-        if (!uploaded.ok) throw Error(`Upload failed: ${file.name}`);
+        const { error: uploadError } = await supabase.storage
+          .from("valuation-documents")
+          .uploadToSignedUrl(signed.path, signed.token, file, { contentType: mimeType });
+        if (uploadError) throw Error(`Upload failed: ${uploadError.message}`);
 
         const completed = await api(`/api/valuations/${valuation.id}/documents/complete`, {
           method: "POST",
@@ -293,7 +333,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
             kind,
             path: signed.path,
             filename: file.name,
-            mimeType: file.type,
+            mimeType,
             byteSize: file.size,
             otherDocumentTypes: types,
           }),
@@ -321,6 +361,9 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
 
     extractionInFlight.current = true;
     extractionCancelled.current = false;
+    setBackgroundExtractionSubmitted(false);
+    setActiveExtractionRunId(null);
+    setExtractionError("");
     setBusy(true);
     setExtracting(true);
     setMessage("");
@@ -351,6 +394,8 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
       const result = await api(`/api/valuations/${valuation.id}/extract`, { method: "POST", signal: controller.signal });
       if (result.processing) {
         backgroundProcessing = true;
+        setActiveExtractionRunId(result.runId || null);
+        setBackgroundExtractionSubmitted(true);
         setValuation((current: any) => current ? { ...current, status: "EXTRACTING", processing_error: null } : current);
         setMessage("Background document reading and AI extraction are in progress. Progress is saved automatically, so this valuation can be reopened later.");
         return;
@@ -383,6 +428,9 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     try {
       await api(`/api/valuations/${valuation.id}/reset?preserveDocuments=true`, { method: "POST" });
       setExtracting(false);
+      setBackgroundExtractionSubmitted(false);
+      setActiveExtractionRunId(null);
+      setExtractionError("");
       setUploadStatus({});
       setReviewData(null);
       await open(valuation.id);
@@ -393,6 +441,18 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     } finally {
       setBusy(false);
     }
+  }
+
+  function returnToHomepage() {
+    window.history.replaceState({}, "", "/");
+    setValuation(null);
+    setExtracting(false);
+    setBackgroundExtractionSubmitted(false);
+    setActiveExtractionRunId(null);
+    setExtractionError("");
+    setReviewData(null);
+    setMessage("");
+    void loadList().catch((error) => setMessage(error.message));
   }
 
   async function saveCustomInstructions() {
@@ -612,11 +672,17 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
           </>
         ) : (
           <>
-            <button className="text-button" onClick={() => { setValuation(null); void loadList(); }}>Back to valuations</button>
+            <button className="text-button" onClick={returnToHomepage}>Back to valuations</button>
             <header className="topbar"><div><p className="eyebrow">{valuation.reference_no}</p><h1>{valuation.property_label || "New valuation"}</h1></div></header>
             {message && !extracting && !valuationPhase && !discardingExtraction && <p className="notice">{message}</p>}
 
-            {extracting && <ExtractionProgressPanel progress={extractionProgress} onCancel={() => void cancelExtraction()} busy={busy && extractionCancelled.current} />}
+            {extracting && <ExtractionProgressPanel
+              progress={extractionProgress}
+              error={extractionError}
+              onCancel={extractionError ? () => void cancelExtraction() : undefined}
+              onReturnHome={!extractionError && backgroundExtractionSubmitted ? returnToHomepage : undefined}
+              busy={busy && extractionCancelled.current}
+            />}
             {valuationPhase && <ValuationProgressPanel phase={valuationPhase} />}
             {discardingExtraction && <WorkspaceTransition title="Discarding extracted data" detail="Removing uploaded documents and preparing a clean valuation workspace." />}
 
@@ -634,15 +700,15 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
                         <label className="upload-select" htmlFor={`upload-${kind}`}>
                           <span className="upload-icon">↑</span>
                           <b>{label}{kind === "SALE_DEED" && <span className="mandatory-mark"> *</span>}</b>
-                          <small>{kind === "OTHER" ? "Select one or more files" : "PDF, DOC, DOCX or image"}</small>
-                          <input id={`upload-${kind}`} type="file" multiple={kind === "OTHER"} accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp" disabled={busy} onChange={(event) => void upload(kind, event)} />
+                          <small>{["OTHER", "SITE_INSPECTION_REPORT"].includes(kind) ? "Select one or more PDF, DOC, DOCX or image files" : "PDF, DOC, DOCX or image"}</small>
+                          <input id={`upload-${kind}`} type="file" multiple={["OTHER", "SITE_INSPECTION_REPORT"].includes(kind)} accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp" disabled={busy} onChange={(event) => void upload(kind, event)} />
                         </label>
                         {kind === "OTHER" && (
                           <input
                             className="other-input"
                             value={otherDocumentTypes}
                             onChange={(event) => setOtherDocumentTypes(event.target.value)}
-                            placeholder="Document type/name, comma-separated"
+                            placeholder="Optional document names, comma-separated in file order"
                             aria-label="Other document type or name"
                           />
                         )}
@@ -684,7 +750,9 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
             {!extracting && !valuationPhase && !discardingExtraction && valuation.status === "EXTRACTING" && (
               <ExtractionProgressPanel
                 progress={{ phase: "AI", title: "Valuation extraction in progress", detail: "ValuerAI is processing the uploaded documents and preparing structured valuation data.", completed: 0, total: valuation.valuation_documents?.length || 0, percent: 70 }}
-                onCancel={() => void cancelExtraction()}
+                error={extractionError}
+                onCancel={extractionError ? () => void cancelExtraction() : undefined}
+                onReturnHome={!extractionError && backgroundExtractionSubmitted ? returnToHomepage : undefined}
                 busy={busy && extractionCancelled.current}
               />
             )}
@@ -714,7 +782,13 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   );
 }
 
-function ExtractionProgressPanel({ progress, onCancel, busy = false }: { progress: ExtractionProgress; onCancel?: () => void; busy?: boolean }) {
+function ExtractionProgressPanel({ progress, error, onCancel, onReturnHome, busy = false }: {
+  progress: ExtractionProgress;
+  error?: string;
+  onCancel?: () => void;
+  onReturnHome?: () => void;
+  busy?: boolean;
+}) {
   const steps: Array<{ key: ExtractionPhase; label: string }> = [
     { key: "OCR", label: "Document text" },
     { key: "AI", label: "AI extraction" },
@@ -730,7 +804,7 @@ function ExtractionProgressPanel({ progress, onCancel, busy = false }: { progres
         <strong>{progress.percent}%</strong>
       </div>
       <div className="extraction-progress-copy">
-        <p className="eyebrow">START VALUATION</p>
+        <p className="eyebrow">{error ? "EXTRACTION ERROR" : "START VALUATION"}</p>
         <h2>{progress.title}</h2>
         <p>{progress.detail}</p>
         {progress.total > 0 && <p className="extraction-count">{progress.completed} of {progress.total} document{progress.total === 1 ? "" : "s"} transcribed</p>}
@@ -742,8 +816,9 @@ function ExtractionProgressPanel({ progress, onCancel, busy = false }: { progres
             return <div className={`extraction-step ${state}`} key={step.key}><span>{state === "complete" ? "✓" : ""}</span><small>{step.label}</small></div>;
           })}
         </div>
-        <p className="extraction-wait-note">Progress is saved automatically. You may leave this tab and reopen the valuation later.</p>
-        {onCancel && <button className="button danger" disabled={busy} onClick={onCancel}>{busy ? "Cancelling…" : "Cancel"}</button>}
+        <p className="extraction-wait-note">{error ? "The uploaded documents have been retained." : "Progress is saved automatically. You may leave this tab and reopen the valuation later."}</p>
+        {error && onCancel && <button className="button danger" disabled={busy} onClick={onCancel}>{busy ? "Cancelling…" : "Cancel"}</button>}
+        {!error && onReturnHome && <button className="button secondary" onClick={onReturnHome}>Return to homepage</button>}
       </div>
     </section>
   );

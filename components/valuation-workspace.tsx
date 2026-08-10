@@ -19,6 +19,8 @@ const documents = [
 
 type UploadStage = "QUEUED" | "UPLOADING" | "UPLOADED" | "PROCESSING" | "READY" | "FAILED";
 type UploadEntry = { id: string; documentId?: string; name: string; stage: UploadStage; error?: string };
+type ExtractionPhase = "PREPARING" | "OCR" | "AI" | "REVIEW";
+type ExtractionProgress = { phase: ExtractionPhase; title: string; detail: string; completed: number; total: number; percent: number };
 
 const uploadStageLabel: Record<UploadStage, string> = {
   QUEUED: "Waiting to upload",
@@ -40,6 +42,14 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   const [extracting, setExtracting] = useState(false);
   const [newValuationMode, setNewValuationMode] = useState(false);
   const [newValuationName, setNewValuationName] = useState("");
+  const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress>({
+    phase: "PREPARING",
+    title: "Preparing uploaded documents",
+    detail: "ValuerAI is preparing the secure files for document text extraction.",
+    completed: 0,
+    total: 0,
+    percent: 8,
+  });
   const creationInFlight = useRef(false);
 
   const stateName = useMemo(
@@ -74,6 +84,51 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     else if (searchParams.get("new") === "1") setNewValuationMode(true);
     else void loadList().catch((error) => setMessage(error.message));
   }, []);
+
+  useEffect(() => {
+    if (!extracting || !valuation?.id) return;
+    let stopped = false;
+
+    async function refreshExtractionProgress() {
+      try {
+        const response = await fetch(`/api/valuations/${valuation.id}`);
+        if (!response.ok || stopped) return;
+        const body = await response.json();
+        const currentValuation = body.valuation;
+        const currentDocuments = currentValuation?.valuation_documents || [];
+        const total = currentDocuments.length;
+        const completed = currentDocuments.filter((document: any) => Boolean(document.ocr_text)).length;
+        const runningDocument = currentDocuments.find((document: any) => document.processing_metadata?.ocrStatus === "RUNNING");
+
+        if (currentValuation?.status === "REVIEW_REQUIRED") {
+          setExtractionProgress({ phase: "REVIEW", title: "Extraction complete", detail: "Opening the extracted-data review screen.", completed, total, percent: 98 });
+        } else if (runningDocument) {
+          setExtractionProgress({
+            phase: "OCR",
+            title: "Document text extraction in progress",
+            detail: `Reading ${runningDocument.original_filename}`,
+            completed,
+            total,
+            percent: Math.min(76, 15 + Math.round((completed / Math.max(total, 1)) * 60)),
+          });
+        } else if (total > 0 && completed === total) {
+          setExtractionProgress({ phase: "AI", title: "AI extraction in progress", detail: "Analysing the combined document text and applying the published state rules.", completed, total, percent: 86 });
+        } else {
+          setExtractionProgress({ phase: "PREPARING", title: "Preparing uploaded documents", detail: "Validating the secure files before document text extraction begins.", completed, total, percent: 10 });
+        }
+      } catch {
+        // The extraction request remains authoritative; a temporary status-poll
+        // failure should not interrupt processing.
+      }
+    }
+
+    void refreshExtractionProgress();
+    const timer = window.setInterval(() => void refreshExtractionProgress(), 1200);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [extracting, valuation?.id]);
 
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -190,6 +245,14 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
 
     setBusy(true);
     setExtracting(true);
+    setExtractionProgress({
+      phase: "PREPARING",
+      title: "Preparing uploaded documents",
+      detail: "ValuerAI is preparing the secure files for document text extraction.",
+      completed: 0,
+      total: valuation.valuation_documents?.length || 0,
+      percent: 8,
+    });
     setUploadStatus((current) => Object.fromEntries(Object.entries(current).map(([kind, entries]) => [kind, entries.map((entry) => entry.stage === "UPLOADED" ? { ...entry, stage: "PROCESSING" as UploadStage } : entry)])));
     setMessage("Document text extraction and AI valuation extraction are in progress. Please keep this page open.");
     try {
@@ -345,9 +408,11 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
           <>
             <button className="text-button" onClick={() => { setValuation(null); void loadList(); }}>Back to valuations</button>
             <header className="topbar"><div><p className="eyebrow">{valuation.reference_no}</p><h1>{valuation.property_label || "New valuation"}</h1></div></header>
-            {message && <p className="notice">{message}</p>}
+            {message && !extracting && <p className="notice">{message}</p>}
 
-            {["DRAFT", "UPLOADING"].includes(valuation.status) && (
+            {extracting && <ExtractionProgressPanel progress={extractionProgress} />}
+
+            {!extracting && ["DRAFT", "UPLOADING"].includes(valuation.status) && (
               <div className="panel">
                 <div className="panel-heading">
                   <div><h2>Upload documents</h2><p>Files are stored securely when uploaded. Document text extraction starts only after you click Start Valuation.</p></div>
@@ -402,8 +467,11 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
               </div>
             )}
 
-            {valuation.status === "EXTRACTING" && (
-              <div className="panel"><h2>Extraction in progress</h2><p className="muted">ValuerAI is extracting document text and structured valuation data.</p><button className="button secondary" onClick={() => void open(valuation.id)}>Refresh status</button></div>
+            {!extracting && valuation.status === "EXTRACTING" && (
+              <ExtractionProgressPanel
+                progress={{ phase: "AI", title: "Valuation extraction in progress", detail: "ValuerAI is processing the uploaded documents and preparing structured valuation data.", completed: 0, total: valuation.valuation_documents?.length || 0, percent: 70 }}
+                onRefresh={() => void open(valuation.id)}
+              />
             )}
 
             {!["DRAFT", "UPLOADING", "REVIEW_REQUIRED", "EXTRACTING"].includes(valuation.status) && (
@@ -413,5 +481,40 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
         )}
       </section>
     </main>
+  );
+}
+
+function ExtractionProgressPanel({ progress, onRefresh }: { progress: ExtractionProgress; onRefresh?: () => void }) {
+  const steps: Array<{ key: ExtractionPhase; label: string }> = [
+    { key: "OCR", label: "Document text" },
+    { key: "AI", label: "AI extraction" },
+    { key: "REVIEW", label: "Review data" },
+  ];
+  const order: ExtractionPhase[] = ["PREPARING", "OCR", "AI", "REVIEW"];
+  const activeIndex = order.indexOf(progress.phase);
+
+  return (
+    <section className="panel extraction-progress-panel" role="status" aria-live="polite">
+      <div className="extraction-progress-visual">
+        <div className="extraction-orbit"><span className="logo-mark">V</span><i /><i /></div>
+        <strong>{progress.percent}%</strong>
+      </div>
+      <div className="extraction-progress-copy">
+        <p className="eyebrow">START VALUATION</p>
+        <h2>{progress.title}</h2>
+        <p>{progress.detail}</p>
+        {progress.total > 0 && <p className="extraction-count">{progress.completed} of {progress.total} document{progress.total === 1 ? "" : "s"} transcribed</p>}
+        <div className="extraction-progress-bar" aria-hidden="true"><span style={{ width: `${progress.percent}%` }} /></div>
+        <div className="extraction-steps">
+          {steps.map((step) => {
+            const stepIndex = order.indexOf(step.key);
+            const state = stepIndex < activeIndex ? "complete" : step.key === progress.phase || (progress.phase === "PREPARING" && step.key === "OCR") ? "active" : "pending";
+            return <div className={`extraction-step ${state}`} key={step.key}><span>{state === "complete" ? "✓" : ""}</span><small>{step.label}</small></div>;
+          })}
+        </div>
+        <p className="extraction-wait-note">Please keep this tab open while processing continues.</p>
+        {onRefresh && <button className="button secondary" onClick={onRefresh}>Refresh status</button>}
+      </div>
+    </section>
   );
 }

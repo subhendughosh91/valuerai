@@ -8,12 +8,13 @@ export async function extractTripuraValuation({ rules, documents, customInstruct
   customInstructions?: string | null;
 }): Promise<MinimumExtractionResult> {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 120_000, maxRetries: 1 });
   const supplementalContext = customInstructions?.trim()
     ? `User-provided custom instructions:\n${customInstructions.trim()}`
     : "User-provided custom instructions: None.";
   const response = await client.responses.create({
     model: getExtractionModel(),
+    reasoning: { effort: "low" },
     store: false,
     input: [
       {

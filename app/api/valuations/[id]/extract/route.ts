@@ -7,6 +7,8 @@ import { AI_CREDITS_EXHAUSTED_MESSAGE, isAiCreditsExhausted } from "../../../../
 import { getAiModelConfiguration } from "../../../../../lib/openai-models";
 import { createSupabaseAdminClient } from "../../../../../lib/supabase/admin";
 
+export const maxDuration = 300;
+
 export async function POST(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const context = await requireProfile(); if (context instanceof NextResponse) return context;
   const { id } = await params;
@@ -53,12 +55,15 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     return NextResponse.json({ error: "Extraction could not be started. Please try again." }, { status: 500 });
   }
   try {
+    const requestStartedAt = Date.now();
     const admin = createSupabaseAdminClient();
     const transcribedDocuments: Array<{ id: string; kind: string; name: string; text: string }> = [];
 
     for (const document of documents) {
       let documentText = document.ocr_text;
       if (!documentText) {
+        const documentStartedAt = Date.now();
+        console.info("[valuation-extraction] document reading started", { valuationId: id, documentId: document.id, model: models.document });
         await context.supabase.from("valuation_documents").update({
           processing_metadata: { ocrStatus: "RUNNING", ocrProvider: "openai-responses", ocrModel: models.document, mode: "on-start-valuation" },
         }).eq("id", document.id);
@@ -77,6 +82,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
             processing_metadata: { ocrStatus: "COMPLETE", ocrProvider: "openai-responses", ocrModel: models.document, mode: "on-start-valuation" },
           }).eq("id", document.id);
           if (updateError) throw new Error(updateError.message);
+          console.info("[valuation-extraction] document reading completed", { valuationId: id, documentId: document.id, model: models.document, durationMs: Date.now() - documentStartedAt });
           await context.supabase.from("audit_events").insert({ actor_id: context.profile.id, valuation_id: id, event_type: "DOCUMENT_OCR_COMPLETED", payload: { documentId: document.id, provider: "openai-responses", model: models.document, mode: "on-start-valuation" } });
         } catch (ocrError) {
           const message = ocrError instanceof Error ? ocrError.message : "Document text extraction failed.";
@@ -92,15 +98,44 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     }
 
     const combinedRules = `EXTRACTION ENGINE INSTRUCTIONS\n${extractionRule.content}\n\nSHARED LAND RULES\n${landRule.content}`;
+    const extractionStartedAt = Date.now();
+    console.info("[valuation-extraction] structured extraction started", { valuationId: id, model: models.extraction });
     const extracted = await extractTripuraValuation({ rules: combinedRules, documents: transcribedDocuments, customInstructions: valuation.custom_instructions });
-    const normalized = await normalizeExtractedFields(extracted, landRule.content);
-    const checked = await runExtractionConsistencyChecks(normalized, combinedRules);
+    console.info("[valuation-extraction] structured extraction completed", { valuationId: id, model: models.extraction, durationMs: Date.now() - extractionStartedAt });
+
+    const postProcessingStartedAt = Date.now();
+    console.info("[valuation-extraction] post-processing started", { valuationId: id, normalizationModel: models.normalization, consistencyModel: models.consistency });
+    const [normalizationResult, consistencyResult] = await Promise.allSettled([
+      normalizeExtractedFields(extracted, landRule.content),
+      runExtractionConsistencyChecks(extracted, combinedRules),
+    ]);
+    const checked = structuredClone(normalizationResult.status === "fulfilled" ? normalizationResult.value : extracted);
+    if (normalizationResult.status === "rejected") {
+      console.error("[valuation-extraction] normalization failed; preserving extracted values", { valuationId: id, model: models.normalization, error: String(normalizationResult.reason) });
+    }
+    if (consistencyResult.status === "fulfilled") {
+      const existingWarningKeys = new Set(checked.extraction_result.validation_warnings.map((warning) => `${warning.field}|${warning.description}`.toLowerCase()));
+      for (const warning of consistencyResult.value.extraction_result.validation_warnings) {
+        const key = `${warning.field}|${warning.description}`.toLowerCase();
+        if (!existingWarningKeys.has(key)) checked.extraction_result.validation_warnings.push(warning);
+        existingWarningKeys.add(key);
+      }
+      checked.extraction_result.missing_required_fields = Array.from(new Set([
+        ...checked.extraction_result.missing_required_fields,
+        ...consistencyResult.value.extraction_result.missing_required_fields,
+      ]));
+    } else {
+      console.error("[valuation-extraction] consistency checks failed; preserving extraction warnings", { valuationId: id, model: models.consistency, error: String(consistencyResult.reason) });
+    }
+    console.info("[valuation-extraction] post-processing completed", { valuationId: id, durationMs: Date.now() - postProcessingStartedAt });
     const extractionResult = checked.extraction_result;
     await context.supabase.from("extraction_runs").update({ status: "COMPLETE", output: checked, evidence: extractionResult.source_trace, contradictions: extractionResult.validation_warnings, completed_at: new Date().toISOString() }).eq("id", run.id);
     await context.supabase.from("valuations").update({ status: "REVIEW_REQUIRED", extraction_data: checked, extraction_rule_id: extractionRule.id }).eq("id", id);
     await context.supabase.from("audit_events").insert({ actor_id: context.profile.id, valuation_id: id, event_type: "EXTRACTION_COMPLETED", payload: { extractionRunId: run.id, warnings: extractionResult.validation_warnings.length, missingRequiredFields: extractionResult.missing_required_fields.length } });
+    console.info("[valuation-extraction] request completed", { valuationId: id, extractionRunId: run.id, durationMs: Date.now() - requestStartedAt });
     return NextResponse.json({ extraction: checked, runId: run.id });
   } catch (error) {
+    console.error("[valuation-extraction] request failed", { valuationId: id, extractionRunId: run.id, error: error instanceof Error ? error.message : String(error) });
     await context.supabase.from("extraction_runs").update({ status: "FAILED", error: error instanceof Error ? error.message : "Unknown extraction error", completed_at: new Date().toISOString() }).eq("id", run.id);
     if (isAiCreditsExhausted(error)) return NextResponse.json({ error: AI_CREDITS_EXHAUSTED_MESSAGE, code: "AI_CREDITS_EXHAUSTED" }, { status: 402 });
     await context.supabase.from("valuations").update({ status: "UPLOADING", processing_error: "Extraction failed. Review the uploaded files and try again." }).eq("id", id);

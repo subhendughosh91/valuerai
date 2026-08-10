@@ -69,9 +69,10 @@ function sameValue(left: unknown, right: unknown) {
 
 export async function normalizeExtractedFields(extraction: MinimumExtractionResult, landRules: string): Promise<MinimumExtractionResult> {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 60_000, maxRetries: 1 });
   const response = await client.responses.create({
     model: getNormalizationModel(),
+    reasoning: { effort: "low" },
     store: false,
     input: [
       {
@@ -117,9 +118,10 @@ Never create facts, update blank fields, reconcile contradictions, choose betwee
 
 export async function runExtractionConsistencyChecks(extraction: MinimumExtractionResult, rules: string): Promise<MinimumExtractionResult> {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 60_000, maxRetries: 1 });
   const response = await client.responses.create({
     model: getConsistencyModel(),
+    reasoning: { effort: "low" },
     store: false,
     input: [
       {

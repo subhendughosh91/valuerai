@@ -68,8 +68,19 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
 
   const api = async (url: string, init?: RequestInit) => {
     const response = await fetch(url, init);
-    const body = await response.json();
-    if (!response.ok) throw Error(body.error || "Request failed");
+    const rawBody = await response.text();
+    let body: any = {};
+    if (rawBody) {
+      try {
+        body = JSON.parse(rawBody);
+      } catch {
+        if (response.status === 504) {
+          throw Error("AI processing exceeded the available server time. Please retry this valuation; the uploaded documents have been retained.");
+        }
+        throw Error(response.ok ? "The server returned an invalid response." : `Request failed with status ${response.status}.`);
+      }
+    }
+    if (!response.ok) throw Error(body.error || `Request failed with status ${response.status}.`);
     return body;
   };
 

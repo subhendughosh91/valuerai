@@ -48,10 +48,11 @@ const valuationJsonSchema = {
 
 export async function prepareValuationInputs({ approvedData, valuationRules, landRules, customInstructions }: { approvedData: unknown; valuationRules: string; landRules: string; customInstructions?: string | null }): Promise<ValuationAgentOutput> {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 180_000, maxRetries: 1 });
   const valuationFacts = toLegacyExtractedValuation(approvedData);
   const response = await client.responses.create({
     model: getValuationModel(),
+    reasoning: { effort: "medium" },
     store: false,
     input: [
       {

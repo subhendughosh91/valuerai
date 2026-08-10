@@ -12,6 +12,35 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
     .eq("id", id)
     .single();
   if (error || !data) return NextResponse.json({ error: error?.message || "Valuation not found." }, { status: 404 });
+
+  // A synchronous extraction invocation can be terminated by the hosting
+  // platform before its catch block runs. Recover runs that have exceeded the
+  // extraction route's maximum duration so the user is not left permanently
+  // on an EXTRACTING screen. Uploaded files and completed OCR text are retained.
+  if (data.status === "EXTRACTING") {
+    const { data: latestRun } = await context.supabase
+      .from("extraction_runs")
+      .select("id,status,started_at")
+      .eq("valuation_id", id)
+      .order("started_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const startedAt = latestRun?.started_at ? Date.parse(latestRun.started_at) : 0;
+    const stale = !latestRun || latestRun.status === "FAILED" || !startedAt || Date.now() - startedAt > 360_000;
+    if (stale) {
+      if (latestRun?.status === "RUNNING") {
+        await context.supabase.from("extraction_runs").update({
+          status: "FAILED",
+          error: "Extraction exceeded the hosting time limit.",
+          completed_at: new Date().toISOString(),
+        }).eq("id", latestRun.id);
+      }
+      const recoveryMessage = "The previous AI extraction was interrupted by a server timeout. Your uploaded documents have been retained; select Start Valuation to retry.";
+      await context.supabase.from("valuations").update({ status: "UPLOADING", processing_error: recoveryMessage }).eq("id", id);
+      data.status = "UPLOADING";
+      data.processing_error = recoveryMessage;
+    }
+  }
   return NextResponse.json({ valuation: data });
 }
 

@@ -10,7 +10,7 @@ type DocumentForOcr = {
 export async function extractDocumentText({ bytes, filename, mimeType }: DocumentForOcr) {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
 
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 90_000, maxRetries: 1 });
   const dataUrl = `data:${mimeType};base64,${bytes.toString("base64")}`;
   const documentInput = mimeType.startsWith("image/")
     ? {
@@ -26,6 +26,7 @@ export async function extractDocumentText({ bytes, filename, mimeType }: Documen
 
   const response = await client.responses.create({
     model: getDocumentModel(),
+    reasoning: { effort: "low" },
     store: false,
     input: [{
       role: "user",

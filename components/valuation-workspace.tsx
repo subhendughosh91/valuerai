@@ -60,6 +60,8 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   });
   const creationInFlight = useRef(false);
   const extractionInFlight = useRef(false);
+  const extractionCancelled = useRef(false);
+  const extractionRequestController = useRef<AbortController | null>(null);
 
   const stateName = useMemo(
     () => INDIA_STATE_OPTIONS.find(([code]) => code === profile.state_code)?.[1] ?? "State unavailable",
@@ -298,6 +300,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     if (!confirmed) return;
 
     extractionInFlight.current = true;
+    extractionCancelled.current = false;
     setBusy(true);
     setExtracting(true);
     setMessage("");
@@ -321,21 +324,48 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     });
     setUploadStatus((current) => Object.fromEntries(Object.entries(current).map(([kind, entries]) => [kind, entries.map((entry) => entry.stage === "UPLOADED" ? { ...entry, stage: "PROCESSING" as UploadStage } : entry)])));
     setMessage("Document text extraction and AI valuation extraction are in progress. Please keep this page open.");
+    const controller = new AbortController();
+    extractionRequestController.current = controller;
     try {
-      const result = await api(`/api/valuations/${valuation.id}/extract`, { method: "POST" });
+      const result = await api(`/api/valuations/${valuation.id}/extract`, { method: "POST", signal: controller.signal });
       if (result.processing) await waitForExtractionCompletion(valuation.id);
       setExtractionProgress({ phase: "REVIEW", title: "Extraction complete", detail: "Preparing the editable review form.", completed: valuation.valuation_documents?.length || 0, total: valuation.valuation_documents?.length || 0, percent: 100 });
       await new Promise((resolve) => window.setTimeout(resolve, 650));
       await open(valuation.id);
       setMessage("Extraction complete. Review the extracted data and confirm when ready.");
     } catch (error: any) {
+      if (extractionCancelled.current) return;
       setUploadStatus({});
       await open(valuation.id);
       setMessage(error.message);
     } finally {
+      if (extractionRequestController.current === controller) extractionRequestController.current = null;
       setExtracting(false);
-      setBusy(false);
+      if (!extractionCancelled.current) setBusy(false);
       extractionInFlight.current = false;
+    }
+  }
+
+  async function cancelExtraction() {
+    if (!valuation || extractionCancelled.current) return;
+    if (!confirm("Cancel the current extraction and return to document upload? Your uploaded files will be retained.")) return;
+
+    extractionCancelled.current = true;
+    extractionRequestController.current?.abort();
+    setBusy(true);
+    setMessage("");
+    try {
+      await api(`/api/valuations/${valuation.id}/reset?preserveDocuments=true`, { method: "POST" });
+      setExtracting(false);
+      setUploadStatus({});
+      setReviewData(null);
+      await open(valuation.id);
+      setMessage("Extraction was cancelled. Your uploaded documents have been retained.");
+    } catch (error: any) {
+      setMessage(error.message);
+      await open(valuation.id);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -572,7 +602,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
             <header className="topbar"><div><p className="eyebrow">{valuation.reference_no}</p><h1>{valuation.property_label || "New valuation"}</h1></div></header>
             {message && !extracting && !valuationPhase && !discardingExtraction && <p className="notice">{message}</p>}
 
-            {extracting && <ExtractionProgressPanel progress={extractionProgress} />}
+            {extracting && <ExtractionProgressPanel progress={extractionProgress} onCancel={() => void cancelExtraction()} busy={busy && extractionCancelled.current} />}
             {valuationPhase && <ValuationProgressPanel phase={valuationPhase} />}
             {discardingExtraction && <WorkspaceTransition title="Discarding extracted data" detail="Removing uploaded documents and preparing a clean valuation workspace." />}
 
@@ -640,7 +670,8 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
             {!extracting && !valuationPhase && !discardingExtraction && valuation.status === "EXTRACTING" && (
               <ExtractionProgressPanel
                 progress={{ phase: "AI", title: "Valuation extraction in progress", detail: "ValuerAI is processing the uploaded documents and preparing structured valuation data.", completed: 0, total: valuation.valuation_documents?.length || 0, percent: 70 }}
-                onRefresh={() => void open(valuation.id)}
+                onCancel={() => void cancelExtraction()}
+                busy={busy && extractionCancelled.current}
               />
             )}
 
@@ -669,7 +700,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   );
 }
 
-function ExtractionProgressPanel({ progress, onRefresh }: { progress: ExtractionProgress; onRefresh?: () => void }) {
+function ExtractionProgressPanel({ progress, onCancel, busy = false }: { progress: ExtractionProgress; onCancel?: () => void; busy?: boolean }) {
   const steps: Array<{ key: ExtractionPhase; label: string }> = [
     { key: "OCR", label: "Document text" },
     { key: "AI", label: "AI extraction" },
@@ -698,7 +729,7 @@ function ExtractionProgressPanel({ progress, onRefresh }: { progress: Extraction
           })}
         </div>
         <p className="extraction-wait-note">Please keep this tab open while processing continues.</p>
-        {onRefresh && <button className="button secondary" onClick={onRefresh}>Refresh status</button>}
+        {onCancel && <button className="button danger" disabled={busy} onClick={onCancel}>{busy ? "Cancelling…" : "Cancel"}</button>}
       </div>
     </section>
   );

@@ -129,16 +129,31 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     }
     console.info("[valuation-extraction] post-processing completed", { valuationId: id, durationMs: Date.now() - postProcessingStartedAt });
     const extractionResult = checked.extraction_result;
-    await context.supabase.from("extraction_runs").update({ status: "COMPLETE", output: checked, evidence: extractionResult.source_trace, contradictions: extractionResult.validation_warnings, completed_at: new Date().toISOString() }).eq("id", run.id);
-    await context.supabase.from("valuations").update({ status: "REVIEW_REQUIRED", extraction_data: checked, extraction_rule_id: extractionRule.id }).eq("id", id);
+    const { data: completedValuation, error: completionError } = await context.supabase
+      .from("valuations")
+      .update({ status: "REVIEW_REQUIRED", extraction_data: checked, extraction_rule_id: extractionRule.id })
+      .eq("id", id)
+      .eq("status", "EXTRACTING")
+      .select("id")
+      .maybeSingle();
+    if (completionError) throw completionError;
+    if (!completedValuation) {
+      await context.supabase.from("extraction_runs").update({
+        status: "FAILED",
+        error: "Extraction cancelled before completion.",
+        completed_at: new Date().toISOString(),
+      }).eq("id", run.id).eq("status", "RUNNING");
+      return NextResponse.json({ error: "Extraction was cancelled." }, { status: 409 });
+    }
+    await context.supabase.from("extraction_runs").update({ status: "COMPLETE", output: checked, evidence: extractionResult.source_trace, contradictions: extractionResult.validation_warnings, completed_at: new Date().toISOString() }).eq("id", run.id).eq("status", "RUNNING");
     await context.supabase.from("audit_events").insert({ actor_id: context.profile.id, valuation_id: id, event_type: "EXTRACTION_COMPLETED", payload: { extractionRunId: run.id, warnings: extractionResult.validation_warnings.length, missingRequiredFields: extractionResult.missing_required_fields.length } });
     console.info("[valuation-extraction] request completed", { valuationId: id, extractionRunId: run.id, durationMs: Date.now() - requestStartedAt });
     return NextResponse.json({ extraction: checked, runId: run.id });
   } catch (error) {
     console.error("[valuation-extraction] request failed", { valuationId: id, extractionRunId: run.id, error: error instanceof Error ? error.message : String(error) });
-    await context.supabase.from("extraction_runs").update({ status: "FAILED", error: error instanceof Error ? error.message : "Unknown extraction error", completed_at: new Date().toISOString() }).eq("id", run.id);
+    await context.supabase.from("extraction_runs").update({ status: "FAILED", error: error instanceof Error ? error.message : "Unknown extraction error", completed_at: new Date().toISOString() }).eq("id", run.id).eq("status", "RUNNING");
     if (isAiCreditsExhausted(error)) return NextResponse.json({ error: AI_CREDITS_EXHAUSTED_MESSAGE, code: "AI_CREDITS_EXHAUSTED" }, { status: 402 });
-    await context.supabase.from("valuations").update({ status: "UPLOADING", processing_error: "Extraction failed. Review the uploaded files and try again." }).eq("id", id);
+    await context.supabase.from("valuations").update({ status: "UPLOADING", processing_error: "Extraction failed. Review the uploaded files and try again." }).eq("id", id).eq("status", "EXTRACTING");
     return NextResponse.json({ error: "Extraction failed." }, { status: 502 });
   }
 }

@@ -8,15 +8,15 @@ import { createSupabaseAdminClient } from "../../../../../lib/supabase/admin";
 export async function POST(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const context = await requireProfile(); if (context instanceof NextResponse) return context;
   const { id } = await params;
-  const { data: valuation } = await context.supabase.from("valuations").select("id,state_code,status").eq("id", id).single();
+  const { data: valuation } = await context.supabase.from("valuations").select("id,state_code,status,custom_instructions").eq("id", id).single();
   if (!valuation || !["UPLOADING", "DRAFT"].includes(valuation.status)) return NextResponse.json({ error: "This valuation cannot be extracted." }, { status: 409 });
   const { data: documents } = await context.supabase.from("valuation_documents").select("id,kind,original_filename,mime_type,storage_path,ocr_text").eq("valuation_id", id);
   if (!documents?.length) return NextResponse.json({ error: "Upload at least one document before extraction." }, { status: 422 });
   const uploadedKinds = new Set(documents.map((document) => document.kind));
-  if (!uploadedKinds.has("SALE_DEED") || !uploadedKinds.has("KHATIYAN")) return NextResponse.json({ error: "Sale Deed and Khatiyan are mandatory before starting a valuation." }, { status: 422 });
+  if (!uploadedKinds.has("SALE_DEED")) return NextResponse.json({ error: "A Sale Deed is mandatory before starting a valuation." }, { status: 422 });
   const { data: rules } = await context.supabase.from("state_rule_versions").select("id,content").eq("state_code", valuation.state_code).eq("kind", "EXTRACTION").eq("status", "PUBLISHED").single();
   if (!rules) return NextResponse.json({ error: "No published extraction rules exist for this state." }, { status: 409 });
-  const { data: run, error: runError } = await context.supabase.from("extraction_runs").insert({ valuation_id: id, status: "RUNNING", model: process.env.OPENAI_EXTRACTION_MODEL || "gpt-5", input_snapshot: { documentIds: documents.map(d => d.id), ruleId: rules.id }, started_at: new Date().toISOString() }).select().single();
+  const { data: run, error: runError } = await context.supabase.from("extraction_runs").insert({ valuation_id: id, status: "RUNNING", model: process.env.OPENAI_EXTRACTION_MODEL || "gpt-5", input_snapshot: { documentIds: documents.map(d => d.id), ruleId: rules.id, customInstructions: valuation.custom_instructions }, started_at: new Date().toISOString() }).select().single();
   if (runError) return NextResponse.json({ error: runError.message }, { status: 400 });
   try {
     await context.supabase.from("valuations").update({ status: "EXTRACTING", processing_error: null }).eq("id", id);
@@ -55,7 +55,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
       transcribedDocuments.push({ id: document.id, name: document.original_filename, text: documentText });
     }
 
-    const extracted = await extractTripuraValuation({ rules: rules.content, documents: transcribedDocuments });
+    const extracted = await extractTripuraValuation({ rules: rules.content, documents: transcribedDocuments, customInstructions: valuation.custom_instructions });
     await context.supabase.from("extraction_runs").update({ status: "COMPLETE", output: extracted, evidence: extracted.evidence, contradictions: extracted.contradictions, completed_at: new Date().toISOString() }).eq("id", run.id);
     await context.supabase.from("valuations").update({ status: "REVIEW_REQUIRED", extraction_data: extracted, extraction_rule_id: rules.id }).eq("id", id);
     await context.supabase.from("audit_events").insert({ actor_id: context.profile.id, valuation_id: id, event_type: "EXTRACTION_COMPLETED", payload: { extractionRunId: run.id, contradictions: extracted.contradictions.length } });

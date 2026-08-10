@@ -42,6 +42,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   const [extracting, setExtracting] = useState(false);
   const [newValuationMode, setNewValuationMode] = useState(false);
   const [newValuationName, setNewValuationName] = useState("");
+  const [customInstructions, setCustomInstructions] = useState("");
   const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress>({
     phase: "PREPARING",
     title: "Preparing uploaded documents",
@@ -69,7 +70,9 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   const open = async (id: string) => {
     setBusy(true);
     try {
-      setValuation((await api(`/api/valuations/${id}`)).valuation);
+      const loadedValuation = (await api(`/api/valuations/${id}`)).valuation;
+      setValuation(loadedValuation);
+      setCustomInstructions(loadedValuation.custom_instructions || "");
     } catch (error: any) {
       setMessage(error.message);
     } finally {
@@ -147,6 +150,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
       });
       window.history.replaceState({}, "", `/?valuation=${result.valuation.id}`);
       setValuation({ ...result.valuation, valuation_documents: [], valuation_calculations: [], reports: [] });
+      setCustomInstructions("");
       setNewValuationMode(false);
     } catch (error: any) {
       setMessage(error.message);
@@ -243,6 +247,13 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     const confirmed = window.confirm("Start AI extraction using the documents currently uploaded for this valuation?");
     if (!confirmed) return;
 
+    try {
+      await saveCustomInstructions();
+    } catch (error: any) {
+      setMessage(error.message);
+      return;
+    }
+
     setBusy(true);
     setExtracting(true);
     setExtractionProgress({
@@ -267,6 +278,16 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
       setExtracting(false);
       setBusy(false);
     }
+  }
+
+  async function saveCustomInstructions() {
+    if (!valuation) return;
+    const result = await api(`/api/valuations/${valuation.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ customInstructions }),
+    });
+    setValuation((current: any) => current ? { ...current, custom_instructions: result.customInstructions } : current);
   }
 
   async function removeDocument(documentId: string, kind: string, localEntryId?: string) {
@@ -312,6 +333,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
       setValuation(null);
       setUploadStatus({});
       setOtherDocumentTypes("");
+      setCustomInstructions("");
       await loadList();
       setMessage("The valuation was cancelled and its uploaded files were removed.");
     } catch (error: any) {
@@ -336,7 +358,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   }
 
   const uploadedKinds = new Set((valuation?.valuation_documents || []).map((document: any) => document.kind));
-  const mandatoryDocumentsUploaded = uploadedKinds.has("SALE_DEED") && uploadedKinds.has("KHATIYAN");
+  const mandatoryDocumentsUploaded = uploadedKinds.has("SALE_DEED");
 
   const formatStartDate = (value: string) => new Date(value).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric" });
   const formatStartTime = (value: string) => new Date(value).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -425,7 +447,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
                       <div className="upload-card" key={kind}>
                         <label className="upload-select" htmlFor={`upload-${kind}`}>
                           <span className="upload-icon">↑</span>
-                          <b>{label}{(kind === "SALE_DEED" || kind === "KHATIYAN") && <span className="mandatory-mark"> *</span>}</b>
+                          <b>{label}{kind === "SALE_DEED" && <span className="mandatory-mark"> *</span>}</b>
                           <small>{kind === "OTHER" ? "Select one or more files" : "PDF, DOC, DOCX or image"}</small>
                           <input id={`upload-${kind}`} type="file" multiple={kind === "OTHER"} accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp" disabled={busy} onChange={(event) => void upload(kind, event)} />
                         </label>
@@ -450,7 +472,20 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
                     );
                   })}
                 </div>
-                {!mandatoryDocumentsUploaded && <p className="mandatory-note">* Sale Deed and Khatiyan must both be uploaded before valuation can start.</p>}
+                <label className="custom-instructions-field">
+                  <span>Custom Instructions to agent <small>(Optional)</small></span>
+                  <textarea
+                    value={customInstructions}
+                    maxLength={4000}
+                    disabled={busy}
+                    onChange={(event) => setCustomInstructions(event.target.value)}
+                    onBlur={() => void saveCustomInstructions().catch((error) => setMessage(error.message))}
+                    placeholder="For example: The Khatiyan is included in the Sale Deed file. KYC is unavailable; use the name Subhendu Ghosh as user-provided information."
+                  />
+                  <small>Provide any additional document context or special guidance for the Extraction and Valuation Engines. These instructions cannot override published rules or verified document evidence.</small>
+                  <small className="instruction-count">{customInstructions.length}/4000</small>
+                </label>
+                {!mandatoryDocumentsUploaded && <p className="mandatory-note">* A Sale Deed must be uploaded before valuation can start.</p>}
                 <div className="action-row upload-actions">
                   <button className="button primary" disabled={busy || !mandatoryDocumentsUploaded} onClick={() => void extract()}>{busy ? "Please wait…" : "Start Valuation"}</button>
                   <button className="button danger" disabled={busy} onClick={() => void cancelValuation()}>Cancel valuation</button>

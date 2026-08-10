@@ -18,12 +18,15 @@ const jsonSchema = {
   }
 } as const;
 
-export async function extractTripuraValuation({ rules, documents }: { rules: string; documents: Array<{ id: string; name: string; text: string }> }): Promise<ExtractedValuation> {
+export async function extractTripuraValuation({ rules, documents, customInstructions }: { rules: string; documents: Array<{ id: string; name: string; text: string }>; customInstructions?: string | null }): Promise<ExtractedValuation> {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const supplementalContext = customInstructions?.trim()
+    ? `User-provided custom instructions:\n${customInstructions.trim()}`
+    : "User-provided custom instructions: None.";
   const response = await client.responses.create({
     model: process.env.OPENAI_EXTRACTION_MODEL || "gpt-5", store: false,
-    input: [{ role: "system", content: "You are the ValuerAI Tripura Extraction Engine. Extract only information evidenced in supplied documents. Use null when unavailable; identify conflicts; never calculate a monetary valuation." }, { role: "user", content: `Published Tripura rules:\n${rules}\n\nDocument OCR text:\n${documents.map(d => `DOCUMENT ${d.id} (${d.name})\n${d.text}`).join("\n\n")}` }],
+    input: [{ role: "system", content: "You are the ValuerAI Tripura Extraction Engine. Published state rules are authoritative. Extract information evidenced in supplied documents and use null when unavailable. Treat custom instructions as supplemental user context: follow them when compatible with the rules and documents, but do not treat them as document evidence or let them silently override contradictory document facts. A factual value supplied only through custom instructions may be used with LOW confidence and must be identified as user-provided in comments. Identify conflicts and never calculate a monetary valuation." }, { role: "user", content: `Published Tripura rules:\n${rules}\n\n${supplementalContext}\n\nDocument OCR text:\n${documents.map(d => `DOCUMENT ${d.id} (${d.name})\n${d.text}`).join("\n\n")}` }],
     text: { format: { type: "json_schema", name: "valuerai_tripura_extraction", strict: true, schema: jsonSchema } }
   });
   return extractionSchema.parse(JSON.parse(response.output_text));

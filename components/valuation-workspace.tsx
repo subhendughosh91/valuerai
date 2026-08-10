@@ -57,6 +57,7 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     percent: 8,
   });
   const creationInFlight = useRef(false);
+  const extractionInFlight = useRef(false);
 
   const stateName = useMemo(
     () => INDIA_STATE_OPTIONS.find(([code]) => code === profile.state_code)?.[1] ?? "State unavailable",
@@ -250,19 +251,24 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   }
 
   async function extract() {
-    if (!valuation || busy) return;
+    if (!valuation || busy || extractionInFlight.current) return;
     const confirmed = window.confirm("Start AI extraction using the documents currently uploaded for this valuation?");
     if (!confirmed) return;
 
+    extractionInFlight.current = true;
+    setBusy(true);
+    setExtracting(true);
+    setMessage("");
     try {
       await saveCustomInstructions();
     } catch (error: any) {
       setMessage(error.message);
+      setExtracting(false);
+      setBusy(false);
+      extractionInFlight.current = false;
       return;
     }
 
-    setBusy(true);
-    setExtracting(true);
     setExtractionProgress({
       phase: "PREPARING",
       title: "Preparing uploaded documents",
@@ -274,7 +280,8 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     setUploadStatus((current) => Object.fromEntries(Object.entries(current).map(([kind, entries]) => [kind, entries.map((entry) => entry.stage === "UPLOADED" ? { ...entry, stage: "PROCESSING" as UploadStage } : entry)])));
     setMessage("Document text extraction and AI valuation extraction are in progress. Please keep this page open.");
     try {
-      await api(`/api/valuations/${valuation.id}/extract`, { method: "POST" });
+      const result = await api(`/api/valuations/${valuation.id}/extract`, { method: "POST" });
+      if (result.processing) await waitForExtractionCompletion(valuation.id);
       setExtractionProgress({ phase: "REVIEW", title: "Extraction complete", detail: "Preparing the editable review form.", completed: valuation.valuation_documents?.length || 0, total: valuation.valuation_documents?.length || 0, percent: 100 });
       await new Promise((resolve) => window.setTimeout(resolve, 650));
       await open(valuation.id);
@@ -286,7 +293,20 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     } finally {
       setExtracting(false);
       setBusy(false);
+      extractionInFlight.current = false;
     }
+  }
+
+  async function waitForExtractionCompletion(id: string) {
+    const deadline = Date.now() + 10 * 60 * 1000;
+    while (Date.now() < deadline) {
+      const current = (await api(`/api/valuations/${id}`)).valuation;
+      if (current.status === "REVIEW_REQUIRED") return;
+      if (current.status === "UPLOADING" && current.processing_error) throw new Error(current.processing_error);
+      if (current.status !== "EXTRACTING") throw new Error("Extraction stopped before completion. Please try again.");
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    }
+    throw new Error("Extraction is still running. Reopen this valuation shortly to review the result.");
   }
 
   async function saveCustomInstructions() {
@@ -636,7 +656,6 @@ function ExtractedDataReview({ data, onChange, onProceed, onDiscard, busy }: { d
   const numberValue = (value: string) => value.trim() === "" ? null : Number(value);
   const deeds = data.deeds || [];
   const landClasses = data.landClasses || [];
-  const evidence = data.evidence || [];
   const contradictions = data.contradictions || [];
   const comments = data.comments || [];
 
@@ -720,8 +739,7 @@ function ExtractedDataReview({ data, onChange, onProceed, onDiscard, busy }: { d
       <aside className="panel ai-feedback-panel">
         <p className="eyebrow">AI FEEDBACK</p><h2>Review notes</h2><p className="muted">These observations are retained as generated and cannot be edited.</p>
         <FeedbackGroup title="Comments" items={comments.map((item: string) => item)} empty="No additional comments." />
-        <FeedbackGroup title="Contradictions" items={contradictions.map((item: any) => item.description)} empty="No contradictions identified." tone="warning" />
-        <div className="feedback-group"><h3>Evidence</h3>{evidence.length ? evidence.map((item: any, index: number) => <div className="evidence-card" key={index}><div><strong>{item.field}</strong><span className={`badge ${item.confidence === "HIGH" ? "good" : item.confidence === "LOW" ? "warn" : ""}`}>{item.confidence}</span></div><p>{item.excerpt}</p><small>{item.documentId}</small></div>) : <p className="empty-review">No evidence excerpts were returned.</p>}</div>
+        <FeedbackGroup title="Contradictions" items={contradictions.map((item: any) => item.description)} empty="No contradictions identified." tone="contradiction" />
       </aside>
     </section>
   );

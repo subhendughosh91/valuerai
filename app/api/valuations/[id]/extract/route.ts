@@ -8,18 +8,45 @@ import { createSupabaseAdminClient } from "../../../../../lib/supabase/admin";
 export async function POST(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const context = await requireProfile(); if (context instanceof NextResponse) return context;
   const { id } = await params;
-  const { data: valuation } = await context.supabase.from("valuations").select("id,state_code,status,custom_instructions").eq("id", id).single();
-  if (!valuation || !["UPLOADING", "DRAFT"].includes(valuation.status)) return NextResponse.json({ error: "This valuation cannot be extracted." }, { status: 409 });
+  const { data: valuation } = await context.supabase.from("valuations").select("id,state_code,status,custom_instructions,extraction_data").eq("id", id).single();
+  if (!valuation) return NextResponse.json({ error: "Valuation not found." }, { status: 404 });
+  if (valuation.status === "REVIEW_REQUIRED" && valuation.extraction_data && Object.keys(valuation.extraction_data).length) {
+    return NextResponse.json({ extraction: valuation.extraction_data, alreadyComplete: true });
+  }
+  if (valuation.status === "EXTRACTING") return NextResponse.json({ processing: true }, { status: 202 });
+  if (!["UPLOADING", "DRAFT"].includes(valuation.status)) return NextResponse.json({ error: "Extraction is not available at the current valuation stage." }, { status: 409 });
   const { data: documents } = await context.supabase.from("valuation_documents").select("id,kind,original_filename,mime_type,storage_path,ocr_text").eq("valuation_id", id);
   if (!documents?.length) return NextResponse.json({ error: "Upload at least one document before extraction." }, { status: 422 });
   const uploadedKinds = new Set(documents.map((document) => document.kind));
   if (!uploadedKinds.has("SALE_DEED")) return NextResponse.json({ error: "A Sale Deed is mandatory before starting a valuation." }, { status: 422 });
   const { data: rules } = await context.supabase.from("state_rule_versions").select("id,content").eq("state_code", valuation.state_code).eq("kind", "EXTRACTION").eq("status", "PUBLISHED").single();
   if (!rules) return NextResponse.json({ error: "No published extraction rules exist for this state." }, { status: 409 });
+
+  // Claim the valuation before creating a run so double-clicks and other tabs
+  // cannot start duplicate extraction work.
+  const { data: claimed, error: claimError } = await context.supabase
+    .from("valuations")
+    .update({ status: "EXTRACTING", processing_error: null })
+    .eq("id", id)
+    .in("status", ["UPLOADING", "DRAFT"])
+    .select("id")
+    .maybeSingle();
+  if (claimError) return NextResponse.json({ error: claimError.message }, { status: 400 });
+  if (!claimed) {
+    const { data: current } = await context.supabase.from("valuations").select("status,extraction_data").eq("id", id).single();
+    if (current?.status === "REVIEW_REQUIRED" && current.extraction_data && Object.keys(current.extraction_data).length) {
+      return NextResponse.json({ extraction: current.extraction_data, alreadyComplete: true });
+    }
+    if (current?.status === "EXTRACTING") return NextResponse.json({ processing: true }, { status: 202 });
+    return NextResponse.json({ error: "Extraction is not available at the current valuation stage." }, { status: 409 });
+  }
+
   const { data: run, error: runError } = await context.supabase.from("extraction_runs").insert({ valuation_id: id, status: "RUNNING", model: process.env.OPENAI_EXTRACTION_MODEL || "gpt-5", input_snapshot: { documentIds: documents.map(d => d.id), ruleId: rules.id, customInstructions: valuation.custom_instructions }, started_at: new Date().toISOString() }).select().single();
-  if (runError) return NextResponse.json({ error: runError.message }, { status: 400 });
+  if (runError) {
+    await context.supabase.from("valuations").update({ status: "UPLOADING", processing_error: "Extraction could not be started. Please try again." }).eq("id", id);
+    return NextResponse.json({ error: "Extraction could not be started. Please try again." }, { status: 500 });
+  }
   try {
-    await context.supabase.from("valuations").update({ status: "EXTRACTING", processing_error: null }).eq("id", id);
     const admin = createSupabaseAdminClient();
     const transcribedDocuments: Array<{ id: string; name: string; text: string }> = [];
 

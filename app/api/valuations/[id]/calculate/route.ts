@@ -25,7 +25,9 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const landRules = rules?.find((rule) => rule.id === valuation.land_rule_id)?.content;
   if (!valuationRules || !landRules) return NextResponse.json({ error: "The published rule snapshot could not be loaded." }, { status: 409 });
 
-  await context.supabase.from("valuations").update({ status: "VALUING", processing_error: null }).eq("id", id);
+  const { error: statusError } = await context.supabase.from("valuations").update({ status: "VALUING", processing_error: null }).eq("id", id);
+  if (statusError) return NextResponse.json({ error: "The valuation could not be started. Please try again." }, { status: 500 });
+  let stage: "VALUATION_ENGINE" | "CALCULATION_SAVE" | "COMPLETION_SAVE" = "VALUATION_ENGINE";
   try {
     const valuationInput = await prepareValuationInputs({
       approvedData: valuation.approved_data,
@@ -35,6 +37,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     });
     const deterministicOutput = calculateTripuraValuation(valuationInput);
     const output = { ...deterministicOutput, agentComments: valuationInput.comments };
+    stage = "CALCULATION_SAVE";
     const { data, error } = await context.supabase.from("valuation_calculations").upsert({
       valuation_id: id,
       input_snapshot: {
@@ -47,13 +50,24 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
       output,
     }).select().single();
     if (error) throw new Error(error.message);
-    await context.supabase.from("valuations").update({ status: "COMPLETE", processing_error: null }).eq("id", id);
+    stage = "COMPLETION_SAVE";
+    const { error: completionError } = await context.supabase.from("valuations").update({ status: "COMPLETE", processing_error: null }).eq("id", id);
+    if (completionError) throw new Error(completionError.message);
     await context.supabase.from("audit_events").insert({ actor_id: context.profile.id, valuation_id: id, event_type: "VALUATION_CALCULATED", payload: { calculationId: data.id, customInstructionsProvided: Boolean(valuation.custom_instructions) } });
     return NextResponse.json({ calculation: data });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Valuation processing failed.";
+    const diagnostic = error instanceof Error ? error.message : "Unknown valuation error";
+    console.error("Valuation processing failed", { valuationId: id, stage, error: diagnostic });
+    if (isAiCreditsExhausted(error)) {
+      await context.supabase.from("valuations").update({ status: "REVIEW_REQUIRED", processing_error: AI_CREDITS_EXHAUSTED_MESSAGE }).eq("id", id);
+      return NextResponse.json({ error: AI_CREDITS_EXHAUSTED_MESSAGE, code: "AI_CREDITS_EXHAUSTED" }, { status: 402 });
+    }
+    const message = stage === "VALUATION_ENGINE"
+      ? "The Valuation Engine could not process the approved data. Review the data and try again."
+      : stage === "CALCULATION_SAVE"
+        ? "The valuation result could not be saved. Please try again or contact the administrator."
+        : "The valuation completed, but its final status could not be saved. Please try again.";
     await context.supabase.from("valuations").update({ status: "REVIEW_REQUIRED", processing_error: message }).eq("id", id);
-    if (isAiCreditsExhausted(error)) return NextResponse.json({ error: AI_CREDITS_EXHAUSTED_MESSAGE, code: "AI_CREDITS_EXHAUSTED" }, { status: 402 });
-    return NextResponse.json({ error: "Valuation processing failed. Review the approved data and try again." }, { status: 502 });
+    return NextResponse.json({ error: message, stage }, { status: 502 });
   }
 }

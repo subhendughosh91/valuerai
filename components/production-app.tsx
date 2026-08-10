@@ -80,7 +80,17 @@ export function ProductionApp() {
   }
 
   if (loading) {
-    return <main className="auth-panel"><p className="muted">Loading ValuerAI…</p></main>;
+    return (
+      <main className="app-loading-screen" role="status" aria-live="polite">
+        <div className="app-loading-brand">
+          <span className="loading-logo">V</span>
+          <span className="loading-ring" />
+        </div>
+        <h1>Valuer<span>AI</span></h1>
+        <p>Preparing your secure valuation workspace</p>
+        <div className="loading-bar"><span /></div>
+      </main>
+    );
   }
 
   if (profile) {

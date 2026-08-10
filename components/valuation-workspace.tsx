@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { INDIA_STATE_OPTIONS } from "../lib/india-states";
 import { createSupabaseBrowserClient } from "../lib/supabase/browser";
 
@@ -38,6 +38,9 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   const [otherDocumentTypes, setOtherDocumentTypes] = useState("");
   const [uploadStatus, setUploadStatus] = useState<Record<string, UploadEntry[]>>({});
   const [extracting, setExtracting] = useState(false);
+  const [newValuationMode, setNewValuationMode] = useState(false);
+  const [newValuationName, setNewValuationName] = useState("");
+  const creationInFlight = useRef(false);
 
   const stateName = useMemo(
     () => INDIA_STATE_OPTIONS.find(([code]) => code === profile.state_code)?.[1] ?? "State unavailable",
@@ -65,12 +68,18 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   };
 
   useEffect(() => {
-    const valuationId = new URLSearchParams(window.location.search).get("valuation");
+    const searchParams = new URLSearchParams(window.location.search);
+    const valuationId = searchParams.get("valuation");
     if (valuationId) void open(valuationId);
+    else if (searchParams.get("new") === "1") setNewValuationMode(true);
     else void loadList().catch((error) => setMessage(error.message));
   }, []);
 
-  async function create() {
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const valuationName = newValuationName.trim();
+    if (!valuationName || creationInFlight.current) return;
+    creationInFlight.current = true;
     setBusy(true);
     setMessage("");
     setUploadStatus({});
@@ -79,13 +88,15 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
       const result = await api("/api/valuations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: "{}",
+        body: JSON.stringify({ propertyLabel: valuationName }),
       });
-      await loadList();
-      await open(result.valuation.id);
+      window.history.replaceState({}, "", `/?valuation=${result.valuation.id}`);
+      setValuation({ ...result.valuation, valuation_documents: [], valuation_calculations: [], reports: [] });
+      setNewValuationMode(false);
     } catch (error: any) {
       setMessage(error.message);
     } finally {
+      creationInFlight.current = false;
       setBusy(false);
     }
   }
@@ -281,17 +292,52 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
 
       <section className="content">
         {!valuation ? (
-          <>
+          newValuationMode ? (
+            <div className="new-valuation-shell">
+              {busy ? (
+                <div className="workspace-loader" role="status" aria-live="polite">
+                  <span className="loading-logo">V</span>
+                  <span className="loading-ring" />
+                  <h1>Preparing your valuation workspace</h1>
+                  <p>Creating the valuation securely. Please wait.</p>
+                </div>
+              ) : (
+                <div className="panel valuation-name-panel">
+                  <p className="eyebrow">NEW VALUATION</p>
+                  <h1>Name this valuation</h1>
+                  <p className="muted">Enter a clear and distinctive name so you can identify this valuation easily in your history.</p>
+                  {message && <p className="notice">{message}</p>}
+                  <form onSubmit={(event) => void create(event)}>
+                    <label className="label">Valuation Name *
+                      <input
+                        name="valuationName"
+                        required
+                        maxLength={200}
+                        autoFocus
+                        value={newValuationName}
+                        onChange={(event) => setNewValuationName(event.target.value)}
+                        placeholder="For example: Sharma Residence, Agartala"
+                      />
+                    </label>
+                    <div className="valuation-name-actions">
+                      <a className="button secondary button-link" href="/">Cancel</a>
+                      <button className="button primary" disabled={!newValuationName.trim()}>Continue to document upload</button>
+                    </div>
+                  </form>
+                </div>
+              )}
+            </div>
+          ) : <>
             <header className="topbar">
               <div><p className="eyebrow">YOUR VALUATION WORKSPACE</p><h1>Welcome {profile.display_name}!</h1></div>
-              <button className="button primary" onClick={() => void create()} disabled={busy}>+ Start new valuation</button>
+              <a className="button primary button-link" href="/?new=1" target="_blank" rel="noopener noreferrer">+ Start new valuation</a>
             </header>
             {message && <p className="notice">{message}</p>}
             <div className="panel">
               <h2>Valuation history</h2>
               <table>
-                <thead><tr><th>Reference</th><th>Property</th><th>Valuation start date</th><th>Valuation start time</th><th>Status</th></tr></thead>
-                <tbody>{valuations.map((item) => <tr key={item.id}><td><a className="valuation-reference" href={`/?valuation=${item.id}`} target="_blank" rel="noopener noreferrer">{item.reference_no}</a></td><td>{item.property_label || "Property valuation"}</td><td>{formatStartDate(item.created_at)}</td><td>{formatStartTime(item.created_at)}</td><td>{item.status.replaceAll("_", " ")}</td></tr>)}</tbody>
+                <thead><tr><th>Reference</th><th>Valuation Name</th><th>Valuation start date</th><th>Valuation start time</th><th>Status</th></tr></thead>
+                <tbody>{valuations.map((item) => <tr key={item.id}><td><a className="valuation-reference" href={`/?valuation=${item.id}`} target="_blank" rel="noopener noreferrer">{item.reference_no}</a></td><td>{item.property_label || "Unnamed valuation"}</td><td>{formatStartDate(item.created_at)}</td><td>{formatStartTime(item.created_at)}</td><td>{item.status.replaceAll("_", " ")}</td></tr>)}</tbody>
               </table>
             </div>
           </>

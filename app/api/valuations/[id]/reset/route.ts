@@ -20,7 +20,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   await context.supabase.from("extraction_runs").delete().eq("valuation_id", id);
   await context.supabase.from("valuation_calculations").delete().eq("valuation_id", id);
   const { error: resetError } = await context.supabase.from("valuations").update({
-    status: discard ? "DISCARDED" : "UPLOADING", property_label: null, extraction_data: {}, approved_data: null, extraction_rule_id: null, valuation_rule_id: null, land_rule_id: null, approved_at: null, discarded_at: discard ? new Date().toISOString() : null, processing_error: null,
+    status: discard ? "DISCARDED" : "UPLOADING", extraction_data: {}, approved_data: null, extraction_rule_id: null, valuation_rule_id: null, land_rule_id: null, approved_at: null, discarded_at: discard ? new Date().toISOString() : null, processing_error: null,
   }).eq("id", id);
   if (resetError) return NextResponse.json({ error: resetError.message }, { status: 400 });
   await context.supabase.from("audit_events").insert({ actor_id: context.profile.id, valuation_id: id, event_type: discard ? "VALUATION_CANCELLED" : "VALUATION_DOCUMENTS_RESET" });

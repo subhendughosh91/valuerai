@@ -80,12 +80,15 @@ export async function normalizeExtractedFields(extraction: MinimumExtractionResu
         content: `You are the ValuerAI normalisation stage. Return updates only for populated extracted fields that genuinely need formatting normalisation.
 
 Permitted operations:
-- Dates: use YYYY-MM-DD only when the complete date is unambiguous; otherwise preserve the source value.
-- Names: remove accidental repeated whitespace and apply conventional capitalisation without changing spelling, initials, ordering, or identity.
-- Deed, Khatiyan, Dag, CS/Sebek, RS/Hal, mother and bata numbers: normalise whitespace and separators only. Never add, remove, transpose, translate, or reinterpret identifier components.
-- Currency: return a numeric value without symbols or thousands separators when the amount is unambiguous.
-- Area: normalise units and numeric formatting. Calculate a converted value only when the supplied land rules explicitly support the conversion.
+- Return all string update values and every normalisation reason in professional English using the Latin alphabet.
+- Dates: use YYYY-MM-DD only when the complete date is unambiguous; otherwise preserve the source value while converting Bengali numeral glyphs to Arabic numerals.
+- Names and places: remove accidental repeated whitespace and apply conventional capitalisation. Transliterate Bengali proper nouns into the Latin alphabet without changing identity, initials, ordering, or source-supported spelling. Prefer an English spelling already evidenced in the extracted record.
+- Descriptive text: translate Bengali descriptions, addresses, relationships, boundary text, property descriptions, and land terminology into clear professional English without adding or omitting facts.
+- Deed, Khatiyan, Dag, CS/Sebek, RS/Hal, mother and bata numbers: convert Bengali numerals to Arabic numerals and transliterate non-Latin identifier characters only when required for the English form. Preserve every component, sequence, separator, slash, and suffix. Never add, remove, transpose, infer, combine, renumber, or reinterpret identifiers.
+- Currency: return a numeric value without symbols or thousands separators when the amount is unambiguous, including conversion of Bengali numeral glyphs.
+- Area: normalise units and numeric formatting. Use recognised Roman-script land units such as Satak, Ganda, Kani, Acre, square feet, Bastu, Bhiti, and Tilla. Calculate a converted value only when the supplied land rules explicitly support the conversion.
 - Boolean and numeric fields must retain their declared data type.
+- If translation or transliteration is uncertain, do not guess. Preserve the existing value and omit the update so the extraction-stage LOW-confidence warning and original Bengali evidence remain available.
 
 Never create facts, update blank fields, reconcile contradictions, choose between competing source values, or alter provenance. Omit unchanged fields.`,
       },
@@ -126,7 +129,7 @@ export async function runExtractionConsistencyChecks(extraction: MinimumExtracti
     input: [
       {
         role: "system",
-        content: "You are the ValuerAI consistency-check stage. Review the supplied extracted fields against one another and the published rules. Identify contradictions, suspicious mismatches, and report-critical missing fields. Do not modify, normalise, calculate, or invent factual values. A warning must state the exact fields and documents involved. Use HIGH only for material conflicts affecting ownership, property identity, area, access, or valuation eligibility.",
+        content: "You are the ValuerAI consistency-check stage. Review the supplied extracted fields against one another and the published rules. Identify contradictions, suspicious mismatches, and report-critical missing fields. Do not modify, normalise, calculate, or invent factual values. Return every warning and missing-field description in professional English using the Latin alphabet. Transliterate Bengali proper nouns and convert Bengali numerals to Arabic numerals when they must be referenced, without changing the underlying source fact. If original Bengali wording is necessary for clarification, place it after the English explanation. A warning must state the exact fields and documents involved. Use HIGH only for material conflicts affecting ownership, property identity, area, access, or valuation eligibility.",
       },
       { role: "user", content: `Published extraction and land rules:\n${rules}\n\nPopulated extracted fields:\n${JSON.stringify(populatedFields(extraction))}` },
     ],

@@ -33,6 +33,7 @@ Add these environment variables in **Vercel → Project Settings → Environment
 | `OPENAI_EXTRACTION_REASONING_EFFORT` | Structured-extraction effort; `low` for standard models, `medium` for Pro | Server only |
 | `OPENAI_NORMALIZATION_MODEL` | Date, name, identifier, currency, and area formatting; `gpt-5-mini` | Server only |
 | `OPENAI_VALUATION_MODEL` | Land-rule and valuation reasoning; `gpt-5.5` | Server only |
+| `OPENAI_CHAT_MODEL` | Property chat answers; optional, defaults to `OPENAI_VALUATION_MODEL` | Server only |
 | `OPENAI_CONSISTENCY_MODEL` | Cost-sensitive contradiction and completeness checks; `gpt-5-nano` | Server only |
 | `OPENAI_BACKGROUND_EXTRACTION_ENABLED` | Rollout switch; start with `false`, then set `true` after webhook configuration | Server only |
 | `OPENAI_WEBHOOK_SECRET` | Signing secret supplied by the OpenAI webhook configuration | Server only |

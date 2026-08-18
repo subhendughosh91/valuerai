@@ -24,6 +24,7 @@ type UploadEntry = { id: string; documentId?: string; name: string; stage: Uploa
 type ExtractionPhase = "PREPARING" | "OCR" | "AI" | "REVIEW";
 type ExtractionProgress = { phase: ExtractionPhase; title: string; detail: string; completed: number; total: number; percent: number };
 type ValuationPhase = "APPROVING" | "VALUING" | "REPORTING" | "COMPLETE";
+type PropertyChatMessage = { id: number; role: "USER" | "ASSISTANT"; content: string; model?: string | null; created_at: string };
 
 const uploadStageLabel: Record<UploadStage, string> = {
   QUEUED: "Waiting to upload",
@@ -79,6 +80,11 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
   const [valuationPhase, setValuationPhase] = useState<ValuationPhase | null>(null);
   const [discardingExtraction, setDiscardingExtraction] = useState(false);
   const [reportDownloadUrl, setReportDownloadUrl] = useState("");
+  const [chatMessages, setChatMessages] = useState<PropertyChatMessage[]>([]);
+  const [chatDraft, setChatDraft] = useState("");
+  const [chatHistoryLoading, setChatHistoryLoading] = useState(false);
+  const [chatSending, setChatSending] = useState(false);
+  const [chatError, setChatError] = useState("");
   const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress>({
     phase: "PREPARING",
     title: "Preparing uploaded documents",
@@ -145,6 +151,20 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     }
   };
 
+  const loadPropertyChat = async (valuationId: string) => {
+    setChatHistoryLoading(true);
+    setChatError("");
+    try {
+      const result = await api(`/api/valuations/${valuationId}/chat`);
+      setChatMessages(result.messages || []);
+    } catch (error: any) {
+      setChatMessages([]);
+      setChatError(error.message);
+    } finally {
+      setChatHistoryLoading(false);
+    }
+  };
+
   const open = async (id: string) => {
     setBusy(true);
     try {
@@ -161,6 +181,13 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
       setCustomInstructions(loadedValuation.custom_instructions || "");
       const editableData = loadedValuation.approved_data || loadedValuation.extraction_data;
       setReviewData(editableData && Object.keys(editableData).length ? normalizeExtractionResult(editableData) : null);
+      if (["REVIEW_REQUIRED", "COMPLETE"].includes(loadedValuation.status) && editableData && Object.keys(editableData).length) {
+        await loadPropertyChat(id);
+      } else {
+        setChatMessages([]);
+        setChatDraft("");
+        setChatError("");
+      }
     } catch (error: any) {
       setMessage(error.message);
       setValuationHistoryLoading(false);
@@ -196,13 +223,13 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
 
         if (current.phase === "COMPLETE") {
           setExtractionError("");
-          setExtractionProgress({ phase: "REVIEW", title: "Extraction complete", detail: "Opening the extracted-data review screen.", completed: total, total, percent: 100 });
+          setExtractionProgress({ phase: "REVIEW", title: "Extraction complete", detail: "Opening the property information assistant.", completed: total, total, percent: 100 });
           setBusy(false);
           extractionInFlight.current = false;
           await new Promise((resolve) => window.setTimeout(resolve, 500));
           if (!stopped) {
             await open(valuation.id);
-            setMessage("Extraction complete. Review the extracted data and confirm when ready.");
+            setMessage("Extraction complete. You can now ask questions about the property.");
           }
         } else if (current.phase === "FAILED") {
           const failureMessage = current.error || "Extraction failed. Your uploaded documents have been retained; select Start Valuation to retry.";
@@ -400,10 +427,10 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
         setMessage("Background document reading and AI extraction are in progress. Progress is saved automatically, so this valuation can be reopened later.");
         return;
       }
-      setExtractionProgress({ phase: "REVIEW", title: "Extraction complete", detail: "Preparing the editable review form.", completed: valuation.valuation_documents?.length || 0, total: valuation.valuation_documents?.length || 0, percent: 100 });
+      setExtractionProgress({ phase: "REVIEW", title: "Extraction complete", detail: "Preparing the property information assistant.", completed: valuation.valuation_documents?.length || 0, total: valuation.valuation_documents?.length || 0, percent: 100 });
       await new Promise((resolve) => window.setTimeout(resolve, 650));
       await open(valuation.id);
-      setMessage("Extraction complete. Review the extracted data and confirm when ready.");
+      setMessage("Extraction complete. You can now ask questions about the property.");
     } catch (error: any) {
       if (extractionCancelled.current) return;
       setUploadStatus({});
@@ -451,8 +478,33 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
     setActiveExtractionRunId(null);
     setExtractionError("");
     setReviewData(null);
+    setChatMessages([]);
+    setChatDraft("");
+    setChatError("");
     setMessage("");
     void loadList().catch((error) => setMessage(error.message));
+  }
+
+  async function sendPropertyQuestion(question?: string) {
+    if (!valuation || chatSending) return;
+    const messageText = (question ?? chatDraft).trim();
+    if (!messageText) return;
+    setChatSending(true);
+    setChatError("");
+    setChatDraft("");
+    try {
+      const result = await api(`/api/valuations/${valuation.id}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: messageText }),
+      });
+      setChatMessages((current) => [...current, result.userMessage, result.assistantMessage]);
+    } catch (error: any) {
+      setChatDraft(messageText);
+      setChatError(error.message);
+    } finally {
+      setChatSending(false);
+    }
   }
 
   async function saveCustomInstructions() {
@@ -657,15 +709,15 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
                 {valuationHistoryLoading && <span role="status" aria-live="polite">Loading records…</span>}
               </div>
               <table aria-busy={valuationHistoryLoading}>
-                <thead><tr><th>Reference</th><th>Valuation Name</th><th>Valuation start date</th><th>Valuation start time</th><th>Status</th><th>Report</th></tr></thead>
+                <thead><tr><th>Reference</th><th>Valuation Name</th><th>Valuation start date</th><th>Valuation start time</th><th>Status</th></tr></thead>
                 <tbody>
                   {valuationHistoryLoading
                     ? Array.from({ length: 4 }, (_, row) => (
                         <tr className="valuation-history-skeleton" key={`valuation-history-skeleton-${row}`} aria-hidden="true">
-                          {Array.from({ length: 6 }, (_, column) => <td key={column}><span /></td>)}
+                          {Array.from({ length: 5 }, (_, column) => <td key={column}><span /></td>)}
                         </tr>
                       ))
-                    : valuations.map((item) => <tr key={item.id}><td><a className="valuation-reference" href={`/?valuation=${item.id}`} target="_blank" rel="noopener noreferrer">{item.reference_no}</a></td><td>{item.property_label || "Unnamed valuation"}</td><td>{formatStartDate(item.created_at)}</td><td>{formatStartTime(item.created_at)}</td><td>{item.status.replaceAll("_", " ")}</td><td>{item.reports?.length ? <a className="valuation-reference" href={`/api/valuations/${item.id}/report`}>Download .docx</a> : "Not available"}</td></tr>)}
+                    : valuations.map((item) => <tr key={item.id}><td><a className="valuation-reference" href={`/?valuation=${item.id}`} target="_blank" rel="noopener noreferrer">{item.reference_no}</a></td><td>{item.property_label || "Unnamed valuation"}</td><td>{formatStartDate(item.created_at)}</td><td>{formatStartTime(item.created_at)}</td><td>{valuationStatusLabel(item.status)}</td></tr>)}
                 </tbody>
               </table>
             </div>
@@ -745,7 +797,17 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
               </div>
             )}
 
-            {!valuationPhase && !discardingExtraction && valuation.status === "REVIEW_REQUIRED" && reviewData && <ExtractedDataReview data={reviewData} onChange={setReviewData} onProceed={() => void proceedWithValuation()} onDiscard={() => void reset()} busy={busy} />}
+            {!extracting && !valuationPhase && !discardingExtraction && ["REVIEW_REQUIRED", "COMPLETE"].includes(valuation.status) && reviewData && (
+              <PropertyInformationChat
+                messages={chatMessages}
+                draft={chatDraft}
+                historyLoading={chatHistoryLoading}
+                sending={chatSending}
+                error={chatError}
+                onDraftChange={setChatDraft}
+                onSend={(question) => void sendPropertyQuestion(question)}
+              />
+            )}
 
             {!extracting && !valuationPhase && !discardingExtraction && valuation.status === "EXTRACTING" && (
               <ExtractionProgressPanel
@@ -759,19 +821,6 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
 
             {!valuationPhase && !discardingExtraction && valuation.status === "VALUING" && <ValuationProgressPanel phase="VALUING" onRefresh={() => void open(valuation.id)} />}
 
-            {!valuationPhase && !discardingExtraction && valuation.status === "COMPLETE" && (
-              <section className="panel valuation-complete-panel">
-                <span className="completion-mark">✓</span>
-                <p className="eyebrow">VALUATION COMPLETE</p>
-                <h2>Your valuation document is ready</h2>
-                <p className="muted">The editable Word report is stored securely with this valuation and remains available from Valuation History.</p>
-                <div className="completion-actions">
-                  {valuation.reports?.length ? <a className="button primary button-link" href={reportDownloadUrl || `/api/valuations/${valuation.id}/report`}>Download valuation report (.docx)</a> : <button className="button primary" onClick={() => void generateReport()}>Generate valuation document</button>}
-                  <button className="button secondary" onClick={() => window.close()}>Close Valuation</button>
-                </div>
-              </section>
-            )}
-
             {!["DRAFT", "UPLOADING", "REVIEW_REQUIRED", "EXTRACTING", "VALUING", "COMPLETE"].includes(valuation.status) && (
               <div className="panel"><h2>Valuation status: {valuation.status.replaceAll("_", " ")}</h2><p className="muted">This valuation has been reopened at its latest saved execution status.</p>{valuation.processing_error && <p className="notice">{valuation.processing_error}</p>}</div>
             )}
@@ -779,6 +828,120 @@ export function ValuationWorkspace({ profile, onSignOut }: { profile: any; onSig
         )}
       </section>
     </main>
+  );
+}
+
+function valuationStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    DRAFT: "Draft",
+    UPLOADING: "Documents pending",
+    EXTRACTING: "Extraction in progress",
+    REVIEW_REQUIRED: "Ready for chat",
+    COMPLETE: "Ready for chat",
+    VALUING: "Valuation in progress",
+    FAILED: "Action required",
+  };
+  return labels[status] || status.replaceAll("_", " ");
+}
+
+function PropertyInformationChat({ messages, draft, historyLoading, sending, error, onDraftChange, onSend }: {
+  messages: PropertyChatMessage[];
+  draft: string;
+  historyLoading: boolean;
+  sending: boolean;
+  error: string;
+  onDraftChange: (value: string) => void;
+  onSend: (question?: string) => void;
+}) {
+  const endRef = useRef<HTMLDivElement | null>(null);
+  const suggestions = [
+    "What is the deed number?",
+    "What is situated to the west of the property?",
+    "Summarise the owner and land identifiers.",
+  ];
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, sending]);
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    onSend();
+  };
+
+  return (
+    <section className="panel property-chat" aria-label="Property information assistant">
+      <div className="property-chat-heading">
+        <div>
+          <p className="eyebrow">PROPERTY INFORMATION ASSISTANT</p>
+          <h2>Ask about this property</h2>
+          <p>The assistant answers from the extracted documents and the published instructions for this state.</p>
+        </div>
+        <span className="property-chat-state"><i /> Extraction ready</span>
+      </div>
+
+      <div className="property-chat-messages" aria-live="polite" aria-busy={historyLoading || sending}>
+        <article className="chat-message assistant-message">
+          <span className="chat-avatar">V</span>
+          <div>
+            <b>ValuerAI</b>
+            <p>The documents have been uploaded and extracted. What would you like to know about the property?</p>
+          </div>
+        </article>
+
+        {historyLoading && (
+          <article className="chat-message assistant-message chat-message-loading" role="status">
+            <span className="chat-avatar">V</span>
+            <div><b>ValuerAI</b><p><i /><i /><i /></p></div>
+          </article>
+        )}
+
+        {!historyLoading && messages.map((chatMessage) => (
+          <article className={`chat-message ${chatMessage.role === "USER" ? "user-message" : "assistant-message"}`} key={chatMessage.id}>
+            <span className="chat-avatar">{chatMessage.role === "USER" ? "You" : "V"}</span>
+            <div>
+              <b>{chatMessage.role === "USER" ? "You" : "ValuerAI"}</b>
+              <p>{chatMessage.content}</p>
+            </div>
+          </article>
+        ))}
+
+        {sending && (
+          <article className="chat-message assistant-message chat-message-loading" role="status">
+            <span className="chat-avatar">V</span>
+            <div><b>ValuerAI is reviewing the extracted information</b><p><i /><i /><i /></p></div>
+          </article>
+        )}
+        <div ref={endRef} />
+      </div>
+
+      {!historyLoading && messages.length === 0 && (
+        <div className="property-chat-suggestions" aria-label="Suggested questions">
+          {suggestions.map((suggestion) => <button type="button" key={suggestion} disabled={sending} onClick={() => onSend(suggestion)}>{suggestion}</button>)}
+        </div>
+      )}
+
+      {error && <p className="property-chat-error" role="alert">{error}</p>}
+      <form className="property-chat-composer" onSubmit={submit}>
+        <textarea
+          value={draft}
+          maxLength={4000}
+          rows={2}
+          disabled={historyLoading || sending}
+          onChange={(event) => onDraftChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              if (draft.trim() && !sending) onSend();
+            }
+          }}
+          placeholder="Ask a question about the extracted property information…"
+          aria-label="Question about this property"
+        />
+        <button className="button primary" disabled={historyLoading || sending || !draft.trim()}>{sending ? "Answering…" : "Send"}</button>
+        <small>Answers are limited to the extracted documents and the published state instructions. Press Enter to send; use Shift+Enter for a new line.</small>
+      </form>
+    </section>
   );
 }
 
@@ -792,7 +955,7 @@ function ExtractionProgressPanel({ progress, error, onCancel, onReturnHome, busy
   const steps: Array<{ key: ExtractionPhase; label: string }> = [
     { key: "OCR", label: "Document text" },
     { key: "AI", label: "AI extraction" },
-    { key: "REVIEW", label: "Review data" },
+    { key: "REVIEW", label: "Property chat" },
   ];
   const order: ExtractionPhase[] = ["PREPARING", "OCR", "AI", "REVIEW"];
   const activeIndex = order.indexOf(progress.phase);

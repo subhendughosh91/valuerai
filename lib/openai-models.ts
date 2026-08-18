@@ -39,6 +39,10 @@ export function getValuationModel() {
   return configuredModel("OPENAI_VALUATION_MODEL", DEFAULT_MODELS.valuation);
 }
 
+export function getPropertyChatModel() {
+  return configuredModel("OPENAI_CHAT_MODEL", getValuationModel());
+}
+
 export function getDocumentModel() {
   return configuredModel("OPENAI_DOCUMENT_MODEL", DEFAULT_MODELS.document);
 }

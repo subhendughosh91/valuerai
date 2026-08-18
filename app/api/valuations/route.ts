@@ -4,7 +4,7 @@ import { requireProfile } from "../../../lib/auth";
 
 export async function GET() {
   const context = await requireProfile(); if (context instanceof NextResponse) return context;
-  const { data, error } = await context.supabase.from("valuations").select("id,reference_no,property_label,status,created_at,updated_at,reports(id)").neq("status", "DISCARDED").order("created_at", { ascending: false });
+  const { data, error } = await context.supabase.from("valuations").select("id,reference_no,property_label,status,created_at,updated_at").neq("status", "DISCARDED").order("created_at", { ascending: false });
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
   return NextResponse.json({ valuations: data });
 }
